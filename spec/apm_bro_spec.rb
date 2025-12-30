@@ -98,9 +98,9 @@ RSpec.describe DeadBro do
       config = DeadBro::Configuration.new
       config.api_key = nil
 
-      ENV["dead_bro_API_KEY"] = "env-api-key"
+      ENV["DEAD_BRO_API_KEY"] = "env-api-key"
       expect(config.resolve_api_key).to eq("env-api-key")
-      ENV.delete("dead_bro_API_KEY")
+      ENV.delete("DEAD_BRO_API_KEY")
     end
 
 

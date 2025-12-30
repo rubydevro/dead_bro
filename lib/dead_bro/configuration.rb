@@ -107,7 +107,7 @@ module DeadBro
     def resolve_api_key
       return @api_key unless @api_key.nil?
       
-      ENV["dead_bro_API_KEY"]
+      ENV["DEAD_BRO_API_KEY"]
     end
 
     def sample_rate=(value)

@@ -22,9 +22,9 @@ You can set via an initializer:
 
 
 ```ruby
-DeadBro.configure do |cfg|
-  cfg.api_key = ENV["dead_bro_API_KEY"]
-  cfg.enabled = true
+DeadBro.configure do |config|
+  config.api_key = ENV["DEAD_BRO_API_KEY"]
+  config.enabled = true
 end
 ```
 
@@ -180,7 +180,7 @@ DeadBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you 
 
 ```ruby
 DeadBro.configure do |config|
-  config.api_key = ENV['dead_bro_API_KEY']
+  config.api_key = ENV['DEAD_BRO_API_KEY']
   config.enabled = true
   
   # Enable EXPLAIN ANALYZE for queries slower than 500ms
