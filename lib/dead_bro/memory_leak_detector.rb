@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   class MemoryLeakDetector
     # Track memory patterns over time to detect leaks
-    MEMORY_HISTORY_KEY = :apm_bro_memory_history
+    MEMORY_HISTORY_KEY = :dead_bro_memory_history
     LEAK_DETECTION_WINDOW = 300 # 5 minutes
     MEMORY_GROWTH_THRESHOLD = 50 # 50MB growth threshold
     MIN_SAMPLES_FOR_LEAK_DETECTION = 10

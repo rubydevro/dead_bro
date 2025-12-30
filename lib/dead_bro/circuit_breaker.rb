@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   class CircuitBreaker
     # Circuit breaker states
     CLOSED = :closed

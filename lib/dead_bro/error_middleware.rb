@@ -2,13 +2,13 @@
 
 require "rack"
 
-module ApmBro
+module DeadBro
   class ErrorMiddleware
     EVENT_NAME = "exception.uncaught"
 
     def initialize(app, client = nil)
       @app = app
-      @client = client || ApmBro.client
+      @client = client || DeadBro.client
     end
 
     def call(env)
@@ -51,7 +51,7 @@ module ApmBro
         rails_env: safe_rails_env,
         app: safe_app_name,
         pid: Process.pid,
-        logs: ApmBro.logger.logs
+        logs: DeadBro.logger.logs
       }
     end
 

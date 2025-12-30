@@ -3,8 +3,8 @@
 require "securerandom"
 require "spec_helper"
 
-RSpec.describe ApmBro::SqlSubscriber do
-  let(:sql_subscriber) { ApmBro::SqlSubscriber }
+RSpec.describe DeadBro::SqlSubscriber do
+  let(:sql_subscriber) { DeadBro::SqlSubscriber }
 
   before do
     # Clear any existing subscriptions
@@ -142,15 +142,15 @@ RSpec.describe ApmBro::SqlSubscriber do
 
   it "handles start_request_tracking and stop_request_tracking" do
     sql_subscriber.start_request_tracking
-    expect(Thread.current[:apm_bro_sql_queries]).to be_a(Array)
+    expect(Thread.current[:dead_bro_sql_queries]).to be_a(Array)
 
     queries = sql_subscriber.stop_request_tracking
     expect(queries).to be_a(Array)
-    expect(Thread.current[:apm_bro_sql_queries]).to be_nil
+    expect(Thread.current[:dead_bro_sql_queries]).to be_nil
   end
 
   it "has configuration for slow query threshold and explain analyze" do
-    config = ApmBro::Configuration.new
+    config = DeadBro::Configuration.new
     expect(config.slow_query_threshold_ms).to eq(500)
     expect(config.explain_analyze_enabled).to be false
     
@@ -162,7 +162,7 @@ RSpec.describe ApmBro::SqlSubscriber do
   end
 
   it "determines if query should be explained" do
-    ApmBro.configuration.explain_analyze_enabled = true
+    DeadBro.configuration.explain_analyze_enabled = true
     # Fast query should not be explained
     expect(sql_subscriber.should_explain_query?(100, "SELECT * FROM users")).to be false
     

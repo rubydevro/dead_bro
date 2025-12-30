@@ -1,4 +1,4 @@
-# ApmBro (Beta Version)
+# DeadBro (Beta Version)
 
 Minimal APM for Rails apps. Automatically measures each controller action's total time, tracks SQL queries, monitors view rendering performance, tracks memory usage and detects leaks, monitors background jobs, and posts metrics to a remote endpoint with an API key read from your app's settings/credentials/env.
 
@@ -9,12 +9,12 @@ To use the gem you need to have a free account with [DeadBro - Rails APM](https:
 Add to your Gemfile:
 
 ```ruby
-gem "apm_bro", git: "https://github.com/rubydevro/apm_bro.git"
+gem "dead_bro", git: "https://github.com/rubydevro/dead_bro.git"
 ```
 
 ## Usage
 
-By default, if Rails is present, ApmBro auto-subscribes to `process_action.action_controller` and posts metrics asynchronously.
+By default, if Rails is present, DeadBro auto-subscribes to `process_action.action_controller` and posts metrics asynchronously.
 
 ### Configuration settings
 
@@ -22,15 +22,15 @@ You can set via an initializer:
 
 
 ```ruby
-ApmBro.configure do |cfg|
-  cfg.api_key = ENV["APM_BRO_API_KEY"]
+DeadBro.configure do |cfg|
+  cfg.api_key = ENV["dead_bro_API_KEY"]
   cfg.enabled = true
 end
 ```
 
 ## Request Sampling
 
-ApmBro supports configurable request sampling to reduce the volume of metrics sent to your APM endpoint, which is useful for high-traffic applications.
+DeadBro supports configurable request sampling to reduce the volume of metrics sent to your APM endpoint, which is useful for high-traffic applications.
 
 ### Configuration
 
@@ -38,17 +38,17 @@ Set the sample rate as a percentage (1-100):
 
 ```ruby
 # Track 50% of requests
-ApmBro.configure do |config|
+DeadBro.configure do |config|
   config.sample_rate = 50
 end
 
 # Track 10% of requests (useful for high-traffic apps)
-ApmBro.configure do |config|
+DeadBro.configure do |config|
   config.sample_rate = 10
 end
 
 # Track all requests (default)
-ApmBro.configure do |config|
+DeadBro.configure do |config|
   config.sample_rate = 100
 end
 ```
@@ -76,7 +76,7 @@ You can exclude specific controllers and jobs from APM tracking.
 
 
 ```ruby
-ApmBro.configure do |config|
+DeadBro.configure do |config|
   config.excluded_controllers = [
     "HealthChecksController",
     "Admin::*" # wildcard supported
@@ -101,12 +101,12 @@ Notes:
 
 ## Exclusive Tracking (Whitelist Mode)
 
-You can configure ApmBro to **only** track specific controllers, actions, or jobs. This is useful when you want to focus monitoring on a subset of your application.
+You can configure DeadBro to **only** track specific controllers, actions, or jobs. This is useful when you want to focus monitoring on a subset of your application.
 
 ### Configuration
 
 ```ruby
-ApmBro.configure do |config|
+DeadBro.configure do |config|
   # Only track these specific controller actions
   config.exclusive_controller_actions = [
     "UsersController#show",
@@ -143,15 +143,15 @@ You can also configure exclusive tracking via environment variables:
 
 ```bash
 # Comma-separated list of controller#action patterns
-APM_BRO_EXCLUSIVE_CONTROLLER_ACTIONS="UsersController#show,Admin::*#*"
+dead_bro_EXCLUSIVE_CONTROLLER_ACTIONS="UsersController#show,Admin::*#*"
 
 # Comma-separated list of job patterns
-APM_BRO_EXCLUSIVE_JOBS="PaymentProcessingJob,EmailDeliveryJob"
+dead_bro_EXCLUSIVE_JOBS="PaymentProcessingJob,EmailDeliveryJob"
 ```
 
 ## SQL Query Tracking
 
-ApmBro automatically tracks SQL queries executed during each request and job. Each request will include a `sql_queries` array containing:
+DeadBro automatically tracks SQL queries executed during each request and job. Each request will include a `sql_queries` array containing:
 - `sql` - The SQL query (always sanitized)
 - `name` - Query name (e.g., "User Load", "User Update")
 - `duration_ms` - Query execution time in milliseconds
@@ -162,11 +162,11 @@ ApmBro automatically tracks SQL queries executed during each request and job. Ea
 
 ## Automatic EXPLAIN ANALYZE for Slow Queries
 
-ApmBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you understand query performance and identify optimization opportunities. This feature runs in the background and doesn't block your application requests.
+DeadBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you understand query performance and identify optimization opportunities. This feature runs in the background and doesn't block your application requests.
 
 ### How It Works
 
-- **Automatic Detection**: When a query exceeds the configured threshold, ApmBro automatically captures its execution plan
+- **Automatic Detection**: When a query exceeds the configured threshold, DeadBro automatically captures its execution plan
 - **Background Execution**: EXPLAIN ANALYZE runs in a separate thread using a dedicated database connection, so it never blocks your application
 - **Database Support**: Works with PostgreSQL, MySQL, SQLite, and other databases
 - **Smart Filtering**: Automatically skips transaction queries (BEGIN, COMMIT, ROLLBACK) and other queries that don't benefit from EXPLAIN
@@ -179,8 +179,8 @@ ApmBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you u
 ### Example Configuration
 
 ```ruby
-ApmBro.configure do |config|
-  config.api_key = ENV['APM_BRO_API_KEY']
+DeadBro.configure do |config|
+  config.api_key = ENV['dead_bro_API_KEY']
   config.enabled = true
   
   # Enable EXPLAIN ANALYZE for queries slower than 500ms
@@ -209,7 +209,7 @@ This execution plan helps you:
 
 ## View Rendering Tracking
 
-ApmBro automatically tracks view rendering performance for each request. This includes:
+DeadBro automatically tracks view rendering performance for each request. This includes:
 
 - **Individual view events**: Templates, partials, and collections rendered
 - **Performance metrics**: Rendering times for each view component
@@ -219,11 +219,11 @@ ApmBro automatically tracks view rendering performance for each request. This in
 
 ## Memory Tracking & Leak Detection
 
-ApmBro automatically tracks memory usage and detects memory leaks with minimal performance impact. This includes:
+DeadBro automatically tracks memory usage and detects memory leaks with minimal performance impact. This includes:
 
 ### Performance-Optimized Memory Tracking
 
-By default, ApmBro uses **lightweight memory tracking** that has minimal performance impact:
+By default, DeadBro uses **lightweight memory tracking** that has minimal performance impact:
 
 - **Memory Usage Monitoring**: Track memory consumption per request (using GC stats, not system calls)
 - **Memory Leak Detection**: Detect growing memory patterns over time
@@ -234,7 +234,7 @@ By default, ApmBro uses **lightweight memory tracking** that has minimal perform
 
 ```ruby
 # In your Rails configuration
-ApmBro.configure do |config|
+DeadBro.configure do |config|
   config.memory_tracking_enabled = true        # Enable lightweight memory tracking (default: true)
   config.allocation_tracking_enabled = false   # Enable detailed allocation tracking (default: false)
   
@@ -249,7 +249,7 @@ end
 
 ## Job Tracking
 
-ApmBro automatically tracks ActiveJob background jobs when ActiveJob is available. Each job execution is tracked with:
+DeadBro automatically tracks ActiveJob background jobs when ActiveJob is available. Each job execution is tracked with:
 
 - `job_class` - The job class name (e.g., "UserMailer::WelcomeEmail")
 - `job_id` - Unique job identifier
@@ -271,4 +271,4 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/rubydevro/apm_bro.
+Bug reports and pull requests are welcome on GitHub at https://github.com/rubydevro/dead_bro.

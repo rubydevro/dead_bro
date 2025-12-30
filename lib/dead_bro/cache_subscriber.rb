@@ -2,9 +2,9 @@
 
 require "active_support/notifications"
 
-module ApmBro
+module DeadBro
   class CacheSubscriber
-    THREAD_LOCAL_KEY = :apm_bro_cache_events
+    THREAD_LOCAL_KEY = :dead_bro_cache_events
 
     EVENTS = [
       "cache_read.active_support",

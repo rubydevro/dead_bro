@@ -6,7 +6,7 @@ rescue LoadError
   # ActiveSupport not available
 end
 
-module ApmBro
+module DeadBro
   class JobSubscriber
     JOB_EVENT_NAME = "perform.active_job"
     JOB_EXCEPTION_EVENT_NAME = "exception.active_job"
@@ -16,11 +16,11 @@ module ApmBro
       ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
           job_class_name = data[:job].class.name
-          if ApmBro.configuration.excluded_job?(job_class_name)
+          if DeadBro.configuration.excluded_job?(job_class_name)
             next
           end
           # If exclusive_jobs is defined and not empty, only track matching jobs
-          unless ApmBro.configuration.exclusive_job?(job_class_name)
+          unless DeadBro.configuration.exclusive_job?(job_class_name)
             next
           end
         rescue
@@ -29,12 +29,12 @@ module ApmBro
         duration_ms = ((finished - started) * 1000.0).round(2)
 
         # Get SQL queries executed during this job
-        sql_queries = ApmBro::SqlSubscriber.stop_request_tracking
+        sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
 
         # Stop memory tracking and get collected memory data
-        if ApmBro.configuration.allocation_tracking_enabled && defined?(ApmBro::MemoryTrackingSubscriber)
-          detailed_memory = ApmBro::MemoryTrackingSubscriber.stop_request_tracking
-          memory_performance = ApmBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
+        if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+          detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+          memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
           # Keep memory_events compact and user-friendly (no large raw arrays)
           memory_events = {
             memory_before: detailed_memory[:memory_before],
@@ -45,7 +45,7 @@ module ApmBro
             large_objects_count: (detailed_memory[:large_objects] || []).length
           }
         else
-          lightweight_memory = ApmBro::LightweightMemoryTracker.stop_request_tracking
+          lightweight_memory = DeadBro::LightweightMemoryTracker.stop_request_tracking
           # Separate raw readings from derived performance metrics to avoid duplicating data
           memory_events = {
             memory_before: lightweight_memory[:memory_before],
@@ -73,7 +73,7 @@ module ApmBro
           gc_stats: gc_stats,
           memory_events: memory_events,
           memory_performance: memory_performance,
-          logs: ApmBro.logger.logs
+          logs: DeadBro.logger.logs
         }
 
         client.post_metric(event_name: name, payload: payload)
@@ -83,11 +83,11 @@ module ApmBro
       ActiveSupport::Notifications.subscribe(JOB_EXCEPTION_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
           job_class_name = data[:job].class.name
-          if ApmBro.configuration.excluded_job?(job_class_name)
+          if DeadBro.configuration.excluded_job?(job_class_name)
             next
           end
           # If exclusive_jobs is defined and not empty, only track matching jobs
-          unless ApmBro.configuration.exclusive_job?(job_class_name)
+          unless DeadBro.configuration.exclusive_job?(job_class_name)
             next
           end
         rescue
@@ -97,12 +97,12 @@ module ApmBro
         exception = data[:exception_object]
 
         # Get SQL queries executed during this job
-        sql_queries = ApmBro::SqlSubscriber.stop_request_tracking
+        sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
 
         # Stop memory tracking and get collected memory data
-        if ApmBro.configuration.allocation_tracking_enabled && defined?(ApmBro::MemoryTrackingSubscriber)
-          detailed_memory = ApmBro::MemoryTrackingSubscriber.stop_request_tracking
-          memory_performance = ApmBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
+        if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+          detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+          memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
           # Keep memory_events compact and user-friendly (no large raw arrays)
           memory_events = {
             memory_before: detailed_memory[:memory_before],
@@ -113,7 +113,7 @@ module ApmBro
             large_objects_count: (detailed_memory[:large_objects] || []).length
           }
         else
-          lightweight_memory = ApmBro::LightweightMemoryTracker.stop_request_tracking
+          lightweight_memory = DeadBro::LightweightMemoryTracker.stop_request_tracking
           # Separate raw readings from derived performance metrics to avoid duplicating data
           memory_events = {
             memory_before: lightweight_memory[:memory_before],
@@ -144,7 +144,7 @@ module ApmBro
           gc_stats: gc_stats,
           memory_events: memory_events,
           memory_performance: memory_performance,
-          logs: ApmBro.logger.logs
+          logs: DeadBro.logger.logs
         }
 
         event_name = exception&.class&.name || "ActiveJob::Exception"

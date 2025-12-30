@@ -9,6 +9,6 @@
 
 # rspec failure tracking
 .rspec_status
-apm_bro-*
+dead_bro-*
 .DS_Store
 FEATURES.md

@@ -1,17 +1,17 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   module MemoryHelpers
     # Helper methods for memory tracking and leak detection
 
     # Take a memory snapshot with a custom label
     def self.snapshot(label)
-      ApmBro::MemoryTrackingSubscriber.take_memory_snapshot(label)
+      DeadBro::MemoryTrackingSubscriber.take_memory_snapshot(label)
     end
 
     # Get current memory analysis
     def self.analyze_memory
-      ApmBro::MemoryLeakDetector.get_memory_analysis
+      DeadBro::MemoryLeakDetector.get_memory_analysis
     end
 
     # Check for memory leaks
@@ -73,7 +73,7 @@ module ApmBro
 
     # Clear memory history (useful for testing)
     def self.clear_history
-      ApmBro::MemoryLeakDetector.clear_history
+      DeadBro::MemoryLeakDetector.clear_history
     end
 
     # Get top memory allocating classes

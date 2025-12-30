@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   class RedisSubscriber
-    THREAD_LOCAL_KEY = :apm_bro_redis_events
+    THREAD_LOCAL_KEY = :dead_bro_redis_events
 
     def self.subscribe!
       install_redis_instrumentation!

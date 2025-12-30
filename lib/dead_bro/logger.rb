@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   class Logger
     SEVERITY_LEVELS = {
       debug: 0,
@@ -19,7 +19,7 @@ module ApmBro
     COLOR_FATAL = "\033[35m"  # Magenta
 
     def initialize
-      @thread_logs_key = :apm_bro_logs
+      @thread_logs_key = :dead_bro_logs
     end
 
     def debug(message)
@@ -94,17 +94,17 @@ module ApmBro
       end
     rescue
       # Never let logging break the application
-      $stdout.puts("[ApmBro] #{severity.to_s.upcase}: #{message}")
+      $stdout.puts("[DeadBro] #{severity.to_s.upcase}: #{message}")
     end
 
     def format_log_message(severity, message, timestamp)
-      "[ApmBro] #{timestamp.iso8601(3)} #{severity.to_s.upcase}: #{message}"
+      "[DeadBro] #{timestamp.iso8601(3)} #{severity.to_s.upcase}: #{message}"
     end
 
     def format_log_message_with_color(severity, message, timestamp)
       color = color_for_severity(severity)
       severity_str = severity.to_s.upcase
-      "#{color}[ApmBro] #{timestamp.iso8601(3)} #{severity_str}: #{message}#{COLOR_RESET}"
+      "#{color}[DeadBro] #{timestamp.iso8601(3)} #{severity_str}: #{message}#{COLOR_RESET}"
     end
 
     def color_for_severity(severity)

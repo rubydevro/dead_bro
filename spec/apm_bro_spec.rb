@@ -1,38 +1,38 @@
 # frozen_string_literal: true
 
-RSpec.describe ApmBro do
+RSpec.describe DeadBro do
   it "has a version number" do
-    expect(ApmBro::VERSION).not_to be nil
+    expect(DeadBro::VERSION).not_to be nil
   end
 
   describe "configuration" do
     it "has basic configuration" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       expect(config.enabled).to be true
       expect(config.open_timeout).to eq(1.0)
       expect(config.read_timeout).to eq(1.0)
     end
 
     it "generates a deploy_id by default and can be overridden" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       id1 = config.resolve_deploy_id
       expect(id1).to be_a(String)
       expect(id1.length).to be >= 8
 
       # Override via ENV
-      ENV["APM_BRO_DEPLOY_ID"] = "test-deploy-123"
-      id2 = ApmBro::Configuration.new.resolve_deploy_id
+      ENV["dead_bro_DEPLOY_ID"] = "test-deploy-123"
+      id2 = DeadBro::Configuration.new.resolve_deploy_id
       expect(id2).to eq("test-deploy-123")
-      ENV.delete("APM_BRO_DEPLOY_ID")
+      ENV.delete("dead_bro_DEPLOY_ID")
     end
 
     it "has sample rate configuration" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       expect(config.sample_rate).to eq(100)
     end
 
     it "validates sample rate range" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
 
       # Valid values
       config.sample_rate = 0
@@ -53,7 +53,7 @@ RSpec.describe ApmBro do
     end
 
     it "determines sampling correctly" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
 
       # 100% sampling should always return true
       config.sample_rate = 100
@@ -71,23 +71,23 @@ RSpec.describe ApmBro do
     end
 
     it "resolves sample rate from environment variables" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.sample_rate = nil # Clear explicit setting
 
       # Test with environment variable
-      ENV["APM_BRO_SAMPLE_RATE"] = "25"
+      ENV["dead_bro_SAMPLE_RATE"] = "25"
       expect(config.resolve_sample_rate).to eq(25)
 
       # Test with invalid environment variable
-      ENV["APM_BRO_SAMPLE_RATE"] = "invalid"
+      ENV["dead_bro_SAMPLE_RATE"] = "invalid"
       expect(config.resolve_sample_rate).to eq(100) # Should fall back to default
 
       # Clean up
-      ENV.delete("APM_BRO_SAMPLE_RATE")
+      ENV.delete("dead_bro_SAMPLE_RATE")
     end
 
     it "falls back to default when no sample rate is configured" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.sample_rate = nil
 
       # Should return default of 100
@@ -95,18 +95,18 @@ RSpec.describe ApmBro do
     end
 
     it "resolves api_key from ENV" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.api_key = nil
 
-      ENV["APM_BRO_API_KEY"] = "env-api-key"
+      ENV["dead_bro_API_KEY"] = "env-api-key"
       expect(config.resolve_api_key).to eq("env-api-key")
-      ENV.delete("APM_BRO_API_KEY")
+      ENV.delete("dead_bro_API_KEY")
     end
 
 
 
     it "resolves deploy_id from GIT_REV" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.deploy_id = nil
 
       ENV["GIT_REV"] = "abc123"
@@ -115,7 +115,7 @@ RSpec.describe ApmBro do
     end
 
     it "resolves deploy_id from HEROKU_SLUG_COMMIT" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.deploy_id = nil
 
       ENV["HEROKU_SLUG_COMMIT"] = "heroku-commit-123"
@@ -124,13 +124,13 @@ RSpec.describe ApmBro do
     end
 
     it "has memory tracking configuration" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       expect(config.memory_tracking_enabled).to be true
       expect(config.allocation_tracking_enabled).to be false
     end
 
     it "has circuit breaker configuration" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       expect(config.circuit_breaker_enabled).to be true
       expect(config.circuit_breaker_failure_threshold).to eq(3)
       expect(config.circuit_breaker_recovery_timeout).to eq(60)
@@ -139,8 +139,8 @@ RSpec.describe ApmBro do
   end
 
   describe "Client" do
-    let(:config) { ApmBro::Configuration.new }
-    let(:client) { ApmBro::Client.new(config) }
+    let(:config) { DeadBro::Configuration.new }
+    let(:client) { DeadBro::Client.new(config) }
 
     before do
       config.enabled = true
@@ -184,7 +184,7 @@ RSpec.describe ApmBro do
 
     it "handles circuit breaker when open" do
       config.circuit_breaker_enabled = true
-      client = ApmBro::Client.new(config)
+      client = DeadBro::Client.new(config)
 
       # Force circuit breaker to open state
       circuit_breaker = client.instance_variable_get(:@circuit_breaker)
@@ -197,7 +197,7 @@ RSpec.describe ApmBro do
 
     it "uses ruby_dev endpoint when enabled" do
       config.ruby_dev = true
-      client = ApmBro::Client.new(config)
+      client = DeadBro::Client.new(config)
 
       # Mock HTTP request
       http_double = double("Net::HTTP")
@@ -232,7 +232,7 @@ RSpec.describe ApmBro do
 
   describe "Exclusions" do
     it "excludes specified controllers" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.excluded_controllers = ["Admin::*", "HealthChecksController"]
 
       expect(config.excluded_controller?("Admin::UsersController")).to be true
@@ -241,7 +241,7 @@ RSpec.describe ApmBro do
     end
 
     it "excludes specified controller#action pairs" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.excluded_controllers = [
         "UsersController#show",
         "Admin::*#*"
@@ -253,7 +253,7 @@ RSpec.describe ApmBro do
     end
 
     it "excludes controller#action patterns from excluded_controllers" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.excluded_controllers = ["ActiveStorage*#*"]
 
       expect(config.excluded_controller?("ActiveStorage::BlobsController", "show")).to be true
@@ -262,7 +262,7 @@ RSpec.describe ApmBro do
     end
 
     it "excludes specified jobs" do
-      config = ApmBro::Configuration.new
+      config = DeadBro::Configuration.new
       config.excluded_jobs = ["ActiveStorage::AnalyzeJob", "Admin::*"]
 
       expect(config.excluded_job?("ActiveStorage::AnalyzeJob")).to be true
@@ -272,7 +272,7 @@ RSpec.describe ApmBro do
   end
 
   describe "JobSubscriber" do
-    let(:job_subscriber) { ApmBro::JobSubscriber }
+    let(:job_subscriber) { DeadBro::JobSubscriber }
 
     before do
       # Clear any existing subscriptions
@@ -293,7 +293,7 @@ RSpec.describe ApmBro do
     it "tracks successful job execution", skip: "Requires ActiveSupport::Notifications" do
       skip unless defined?(ActiveSupport::Notifications)
 
-      job_subscriber.subscribe!(client: ApmBro::Client.new)
+      job_subscriber.subscribe!(client: DeadBro::Client.new)
 
       # Mock a job
       job = double("Job", class: double("JobClass", name: "TestJob"), job_id: "123", queue_name: "default", arguments: ["arg1", "arg2"])
@@ -307,7 +307,7 @@ RSpec.describe ApmBro do
     it "tracks job exceptions", skip: "Requires ActiveSupport::Notifications" do
       skip unless defined?(ActiveSupport::Notifications)
 
-      job_subscriber.subscribe!(client: ApmBro::Client.new)
+      job_subscriber.subscribe!(client: DeadBro::Client.new)
 
       # Mock a job and exception
       job = double("Job", class: double("JobClass", name: "TestJob"), job_id: "123", queue_name: "default", arguments: ["arg1"])
@@ -344,7 +344,7 @@ RSpec.describe ApmBro do
   end
 
   describe "Logger" do
-    let(:logger) { ApmBro::Logger.new }
+    let(:logger) { DeadBro::Logger.new }
 
     before do
       logger.clear
@@ -414,7 +414,7 @@ RSpec.describe ApmBro do
   end
 
   describe "CircuitBreaker" do
-    let(:circuit_breaker) { ApmBro::CircuitBreaker.new(failure_threshold: 3, recovery_timeout: 1) }
+    let(:circuit_breaker) { DeadBro::CircuitBreaker.new(failure_threshold: 3, recovery_timeout: 1) }
 
     it "starts in closed state" do
       expect(circuit_breaker.state).to eq(:closed)
@@ -487,44 +487,44 @@ RSpec.describe ApmBro do
     end
   end
 
-  describe "ApmBro module" do
+  describe "DeadBro module" do
     it "configures settings via configure block" do
-      ApmBro.configure do |config|
+      DeadBro.configure do |config|
         config.enabled = false
         config.api_key = "test-key"
       end
 
-      expect(ApmBro.configuration.enabled).to be false
-      expect(ApmBro.configuration.api_key).to eq("test-key")
+      expect(DeadBro.configuration.enabled).to be false
+      expect(DeadBro.configuration.api_key).to eq("test-key")
     end
 
     it "resets configuration" do
-      ApmBro.configure do |config|
+      DeadBro.configure do |config|
         config.enabled = false
         config.api_key = "test-key"
       end
 
-      ApmBro.reset_configuration!
+      DeadBro.reset_configuration!
 
-      expect(ApmBro.configuration.enabled).to be true
-      expect(ApmBro.configuration.api_key).to be_nil
+      expect(DeadBro.configuration.enabled).to be true
+      expect(DeadBro.configuration.api_key).to be_nil
     end
 
     it "returns a logger instance" do
-      logger = ApmBro.logger
-      expect(logger).to be_a(ApmBro::Logger)
-      expect(ApmBro.logger).to eq(logger) # Should be memoized
+      logger = DeadBro.logger
+      expect(logger).to be_a(DeadBro::Logger)
+      expect(DeadBro.logger).to eq(logger) # Should be memoized
     end
 
     it "generates process_deploy_id" do
-      id = ApmBro.process_deploy_id
+      id = DeadBro.process_deploy_id
       expect(id).to be_a(String)
       expect(id.length).to eq(36) # UUID format
-      expect(ApmBro.process_deploy_id).to eq(id) # Should be memoized
+      expect(DeadBro.process_deploy_id).to eq(id) # Should be memoized
     end
 
     it "returns environment via env method" do
-      env = ApmBro.env
+      env = DeadBro.env
       expect(env).to be_a(String)
       # Should return development, test, or production, or fallback to ENV
       expect(["development", "test", "production", ENV["RACK_ENV"], ENV["RAILS_ENV"]].compact).to include(env)

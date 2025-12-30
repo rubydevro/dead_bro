@@ -6,14 +6,14 @@ rescue LoadError
   # ActiveSupport not available
 end
 
-module ApmBro
+module DeadBro
   class SqlSubscriber
     SQL_EVENT_NAME = "sql.active_record"
-    THREAD_LOCAL_KEY = :apm_bro_sql_queries
-    THREAD_LOCAL_ALLOC_START_KEY = :apm_bro_sql_alloc_start
-    THREAD_LOCAL_ALLOC_RESULTS_KEY = :apm_bro_sql_alloc_results
-    THREAD_LOCAL_BACKTRACE_KEY = :apm_bro_sql_backtraces
-    THREAD_LOCAL_EXPLAIN_PENDING_KEY = :apm_bro_explain_pending
+    THREAD_LOCAL_KEY = :dead_bro_sql_queries
+    THREAD_LOCAL_ALLOC_START_KEY = :dead_bro_sql_alloc_start
+    THREAD_LOCAL_ALLOC_RESULTS_KEY = :dead_bro_sql_alloc_results
+    THREAD_LOCAL_BACKTRACE_KEY = :dead_bro_sql_backtraces
+    THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
 
     def self.subscribe!
       # Subscribe with a start/finish listener to measure allocations per query
@@ -103,7 +103,7 @@ module ApmBro
         begin
           thread.join(remaining_time)
         rescue => e
-          ApmBro.logger.debug("Error waiting for EXPLAIN ANALYZE: #{e.message}")
+          DeadBro.logger.debug("Error waiting for EXPLAIN ANALYZE: #{e.message}")
         end
       end
     end
@@ -125,8 +125,8 @@ module ApmBro
     end
 
     def self.should_explain_query?(duration_ms, sql)
-      return false unless ApmBro.configuration.explain_analyze_enabled
-      return false if duration_ms < ApmBro.configuration.slow_query_threshold_ms
+      return false unless DeadBro.configuration.explain_analyze_enabled
+      return false if duration_ms < DeadBro.configuration.slow_query_threshold_ms
       return false unless sql.is_a?(String)
       return false if sql.strip.empty?
       
@@ -203,8 +203,8 @@ module ApmBro
       pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] ||= []
       pending << explain_thread
     rescue => e
-      # Use ApmBro.logger here since we're still in the main thread
-      ApmBro.logger.debug("Failed to start EXPLAIN ANALYZE thread: #{e.message}")
+      # Use DeadBro.logger here since we're still in the main thread
+      DeadBro.logger.debug("Failed to start EXPLAIN ANALYZE thread: #{e.message}")
     end
 
     # Append a log entry directly to a specific thread's log storage
@@ -219,13 +219,13 @@ module ApmBro
       }
 
       # Append to the specified thread's log storage
-      thread[:apm_bro_logs] ||= []
-      thread[:apm_bro_logs] << log_entry
+      thread[:dead_bro_logs] ||= []
+      thread[:dead_bro_logs] << log_entry
 
       # Also print the message immediately (using current thread's logger)
       begin
         if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-          formatted_message = "[ApmBro] #{timestamp.iso8601(3)} #{severity.to_s.upcase}: #{message}"
+          formatted_message = "[DeadBro] #{timestamp.iso8601(3)} #{severity.to_s.upcase}: #{message}"
           case severity
           when :debug
             Rails.logger.debug(formatted_message)
@@ -240,11 +240,11 @@ module ApmBro
           end
         else
           # Fallback to stdout
-          $stdout.puts("[ApmBro] #{timestamp.iso8601(3)} #{severity.to_s.upcase}: #{message}")
+          $stdout.puts("[DeadBro] #{timestamp.iso8601(3)} #{severity.to_s.upcase}: #{message}")
         end
       rescue
         # Never let logging break the application
-        $stdout.puts("[ApmBro] #{severity.to_s.upcase}: #{message}")
+        $stdout.puts("[DeadBro] #{severity.to_s.upcase}: #{message}")
       end
     end
 
@@ -428,16 +428,16 @@ module ApmBro
   end
 end
 
-module ApmBro
+module DeadBro
   # Listener that records GC allocation deltas per SQL event id
   class SqlAllocListener
     def start(name, id, payload)
-      map = (Thread.current[ApmBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY] ||= {})
+      map = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY] ||= {})
       map[id] = GC.stat[:total_allocated_objects] if defined?(GC) && GC.respond_to?(:stat)
 
       # Capture the backtrace at query start time (before notification system processes it)
       # This gives us the actual call stack where the SQL was executed
-      backtrace_map = (Thread.current[ApmBro::SqlSubscriber::THREAD_LOCAL_BACKTRACE_KEY] ||= {})
+      backtrace_map = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_BACKTRACE_KEY] ||= {})
       captured_backtrace = Thread.current.backtrace
       if captured_backtrace && captured_backtrace.is_a?(Array)
         # Skip the first few frames (our listener code) to get to the actual query execution
@@ -447,7 +447,7 @@ module ApmBro
     end
 
     def finish(name, id, payload)
-      start_map = Thread.current[ApmBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY]
+      start_map = Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY]
       return unless start_map && start_map.key?(id)
 
       start_count = start_map.delete(id)
@@ -459,7 +459,7 @@ module ApmBro
       return unless start_count && end_count
 
       delta = end_count - start_count
-      results = (Thread.current[ApmBro::SqlSubscriber::THREAD_LOCAL_ALLOC_RESULTS_KEY] ||= {})
+      results = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_RESULTS_KEY] ||= {})
       results[id] = delta
     rescue
     end

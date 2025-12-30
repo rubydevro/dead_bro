@@ -2,7 +2,7 @@
 
 require "active_support/notifications"
 
-module ApmBro
+module DeadBro
   class Subscriber
     EVENT_NAME = "process_action.action_controller"
 
@@ -13,12 +13,12 @@ module ApmBro
         begin
           controller_name = data[:controller].to_s
           action_name = data[:action].to_s
-          if ApmBro.configuration.excluded_controller?(controller_name, action_name)
+          if DeadBro.configuration.excluded_controller?(controller_name, action_name)
             puts "excluded controller"
             next
           end
           # If exclusive_controller_actions is defined and not empty, only track matching actions
-          unless ApmBro.configuration.exclusive_controller?(controller_name, action_name)
+          unless DeadBro.configuration.exclusive_controller?(controller_name, action_name)
             puts "exclusive controller"
             next
           end
@@ -27,20 +27,20 @@ module ApmBro
 
         duration_ms = ((finished - started) * 1000.0).round(2)
         # Stop SQL tracking and get collected queries (this was started by the request)
-        sql_queries = ApmBro::SqlSubscriber.stop_request_tracking
+        sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
 
         # Stop cache and redis tracking
-        cache_events = defined?(ApmBro::CacheSubscriber) ? ApmBro::CacheSubscriber.stop_request_tracking : []
-        redis_events = defined?(ApmBro::RedisSubscriber) ? ApmBro::RedisSubscriber.stop_request_tracking : []
+        cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
+        redis_events = defined?(DeadBro::RedisSubscriber) ? DeadBro::RedisSubscriber.stop_request_tracking : []
 
         # Stop view rendering tracking and get collected view events
-        view_events = ApmBro::ViewRenderingSubscriber.stop_request_tracking
-        view_performance = ApmBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
+        view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
+        view_performance = DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
 
         # Stop memory tracking and get collected memory data
-        if ApmBro.configuration.allocation_tracking_enabled && defined?(ApmBro::MemoryTrackingSubscriber)
-          detailed_memory = ApmBro::MemoryTrackingSubscriber.stop_request_tracking
-          memory_performance = ApmBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
+        if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+          detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+          memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
           # Keep memory_events compact and user-friendly (no large raw arrays)
           memory_events = {
             memory_before: detailed_memory[:memory_before],
@@ -51,7 +51,7 @@ module ApmBro
             large_objects_count: (detailed_memory[:large_objects] || []).length
           }
         else
-          lightweight_memory = ApmBro::LightweightMemoryTracker.stop_request_tracking
+          lightweight_memory = DeadBro::LightweightMemoryTracker.stop_request_tracking
           # Separate raw readings from derived performance metrics to avoid duplicating data
           memory_events = {
             memory_before: lightweight_memory[:memory_before],
@@ -66,8 +66,8 @@ module ApmBro
         end
 
         # Record memory sample for leak detection (only if memory tracking enabled)
-        if ApmBro.configuration.memory_tracking_enabled
-          ApmBro::MemoryLeakDetector.record_memory_sample({
+        if DeadBro.configuration.memory_tracking_enabled
+          DeadBro::MemoryLeakDetector.record_memory_sample({
             memory_usage: memory_usage_mb,
             gc_count: gc_stats[:count],
             heap_pages: gc_stats[:heap_allocated_pages],
@@ -102,7 +102,7 @@ module ApmBro
               message: (exception_message || exception_obj&.message).to_s[0, 1000],
               backtrace: backtrace,
               error: true,
-              logs: ApmBro.logger.logs
+              logs: DeadBro.logger.logs
             }
 
             event_name = (exception_class || exception_obj&.class&.name || "exception").to_s
@@ -132,7 +132,7 @@ module ApmBro
           gc_stats: gc_stats,
           sql_count: sql_count(data),
           sql_queries: sql_queries,
-          http_outgoing: Thread.current[:apm_bro_http_events] || [],
+          http_outgoing: Thread.current[:dead_bro_http_events] || [],
           cache_events: cache_events,
           redis_events: redis_events,
           cache_hits: cache_hits(data),
@@ -141,7 +141,7 @@ module ApmBro
           view_performance: view_performance,
           memory_events: memory_events,
           memory_performance: memory_performance,
-          logs: ApmBro.logger.logs
+          logs: DeadBro.logger.logs
         }
         client.post_metric(event_name: name, payload: payload)
       end

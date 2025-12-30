@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    apm_bro (0.1.15)
+    dead_bro (0.1.15)
 
 GEM
   remote: https://rubygems.org/
@@ -106,7 +106,7 @@ PLATFORMS
 
 DEPENDENCIES
   activesupport (~> 7.0)
-  apm_bro!
+  dead_bro!
   rake (~> 13.0)
   rspec (~> 3.0)
   simplecov (~> 0.22)

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   class Configuration
     attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev, :memory_tracking_enabled, 
     :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout, 
@@ -31,7 +31,7 @@ module ApmBro
     end
 
     def resolve_deploy_id
-      ENV["APM_BRO_DEPLOY_ID"] || ENV["GIT_REV"] || ENV["HEROKU_SLUG_COMMIT"] || ApmBro.process_deploy_id
+      ENV["dead_bro_DEPLOY_ID"] || ENV["GIT_REV"] || ENV["HEROKU_SLUG_COMMIT"] || DeadBro.process_deploy_id
     end
 
     def excluded_controller?(controller_name, action_name = nil)
@@ -89,8 +89,8 @@ module ApmBro
     def resolve_sample_rate
       return @sample_rate unless @sample_rate.nil?
       
-      if ENV["APM_BRO_SAMPLE_RATE"]
-        env_value = ENV["APM_BRO_SAMPLE_RATE"].to_s.strip
+      if ENV["dead_bro_SAMPLE_RATE"]
+        env_value = ENV["dead_bro_SAMPLE_RATE"].to_s.strip
         # Validate that it's a valid integer string
         if env_value.match?(/^\d+$/)
           parsed = env_value.to_i
@@ -107,7 +107,7 @@ module ApmBro
     def resolve_api_key
       return @api_key unless @api_key.nil?
       
-      ENV["APM_BRO_API_KEY"]
+      ENV["dead_bro_API_KEY"]
     end
 
     def sample_rate=(value)

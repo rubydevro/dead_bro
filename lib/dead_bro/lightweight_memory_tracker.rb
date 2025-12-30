@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-module ApmBro
+module DeadBro
   class LightweightMemoryTracker
     # Ultra-lightweight memory tracking with minimal performance impact
-    THREAD_LOCAL_KEY = :apm_bro_lightweight_memory
+    THREAD_LOCAL_KEY = :dead_bro_lightweight_memory
 
     def self.start_request_tracking
-      return unless ApmBro.configuration.memory_tracking_enabled
+      return unless DeadBro.configuration.memory_tracking_enabled
 
       # Only track essential metrics to minimize overhead
       Thread.current[THREAD_LOCAL_KEY] = {

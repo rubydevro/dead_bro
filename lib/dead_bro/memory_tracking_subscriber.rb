@@ -2,12 +2,12 @@
 
 require "active_support/notifications"
 
-module ApmBro
+module DeadBro
   class MemoryTrackingSubscriber
     # Object allocation events
     ALLOCATION_EVENT = "object_allocations.active_support"
 
-    THREAD_LOCAL_KEY = :apm_bro_memory_events
+    THREAD_LOCAL_KEY = :dead_bro_memory_events
     # Consider objects larger than this many bytes as "large"
     LARGE_OBJECT_THRESHOLD = 1_000_000 # 1MB threshold for large objects
 
@@ -19,7 +19,7 @@ module ApmBro
 
     def self.subscribe!(client: Client.new)
       # Only enable allocation tracking if explicitly enabled (expensive!)
-      return unless ApmBro.configuration.allocation_tracking_enabled
+      return unless DeadBro.configuration.allocation_tracking_enabled
       if defined?(ActiveSupport::Notifications) && ActiveSupport::Notifications.notifier.respond_to?(:subscribe)
         begin
           # Subscribe to object allocation events with sampling
@@ -38,7 +38,7 @@ module ApmBro
 
     def self.start_request_tracking
       # Only track if memory tracking is enabled
-      return unless ApmBro.configuration.memory_tracking_enabled
+      return unless DeadBro.configuration.memory_tracking_enabled
 
       Thread.current[THREAD_LOCAL_KEY] = {
         allocations: [],

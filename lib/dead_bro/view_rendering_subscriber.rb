@@ -2,14 +2,14 @@
 
 require "active_support/notifications"
 
-module ApmBro
+module DeadBro
   class ViewRenderingSubscriber
     # Rails view rendering events
     RENDER_TEMPLATE_EVENT = "render_template.action_view"
     RENDER_PARTIAL_EVENT = "render_partial.action_view"
     RENDER_COLLECTION_EVENT = "render_collection.action_view"
 
-    THREAD_LOCAL_KEY = :apm_bro_view_events
+    THREAD_LOCAL_KEY = :dead_bro_view_events
 
     def self.subscribe!(client: Client.new)
       # Track template rendering

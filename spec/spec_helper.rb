@@ -14,7 +14,7 @@ rescue LoadError
   # ActiveSupport not available
 end
 
-require "apm_bro"
+require "dead_bro"
 require "net/http"
 
 RSpec.configure do |config|

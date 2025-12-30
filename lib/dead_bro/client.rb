@@ -5,9 +5,9 @@ require "uri"
 require "json"
 require "timeout"
 
-module ApmBro
+module DeadBro
   class Client
-    def initialize(configuration = ApmBro.configuration)
+    def initialize(configuration = DeadBro.configuration)
       @configuration = configuration
       @circuit_breaker = create_circuit_breaker
     end

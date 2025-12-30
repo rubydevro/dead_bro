@@ -3,7 +3,7 @@
 require "uri"
 require "net/http"
 
-module ApmBro
+module DeadBro
   module HttpInstrumentation
     EVENT_NAME = "outgoing.http"
 
@@ -52,8 +52,8 @@ module ApmBro
                   exception: error && error.class.name
                 }
                 # Accumulate per-request; only send with controller metric
-                if Thread.current[:apm_bro_http_events]
-                  Thread.current[:apm_bro_http_events] << payload
+                if Thread.current[:dead_bro_http_events]
+                  Thread.current[:dead_bro_http_events] << payload
                 end
               end
             rescue
@@ -96,8 +96,8 @@ module ApmBro
                   duration_ms: duration_ms
                 }
                 # Accumulate per-request; only send with controller metric
-                if Thread.current[:apm_bro_http_events]
-                  Thread.current[:apm_bro_http_events] << payload
+                if Thread.current[:dead_bro_http_events]
+                  Thread.current[:dead_bro_http_events] << payload
                 end
               end
             rescue

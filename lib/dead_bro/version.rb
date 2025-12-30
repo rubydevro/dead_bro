@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
-module ApmBro
-  VERSION = "0.1.19"
+module DeadBro
+  VERSION = "0.2.0"
 end
