@@ -58,7 +58,9 @@ module DeadBro
         if should_explain_query?(duration_ms, original_sql)
           # Store reference to query_info so we can update it when EXPLAIN completes
           query_info[:explain_plan] = nil # Placeholder
-          start_explain_analyze_background(original_sql, data[:connection_id], query_info)
+          # Capture binds if available (type_casted_binds is preferred as they are ready for quoting)
+          binds = data[:type_casted_binds] || data[:binds]
+          start_explain_analyze_background(original_sql, data[:connection_id], query_info, binds)
         end
 
         # Add to thread-local storage
@@ -142,7 +144,7 @@ module DeadBro
       true
     end
 
-    def self.start_explain_analyze_background(sql, connection_id, query_info)
+    def self.start_explain_analyze_background(sql, connection_id, query_info, binds = nil)
       return unless defined?(ActiveRecord)
       return unless ActiveRecord::Base.respond_to?(:connection)
       
@@ -160,8 +162,11 @@ module DeadBro
             connection = ActiveRecord::Base.connection
           end
           
+          # Interpolate binds if present to ensure EXPLAIN works with placeholders
+          final_sql = interpolate_sql_with_binds(sql, binds, connection)
+          
           # Build EXPLAIN query based on database adapter
-          explain_sql = build_explain_query(sql, connection)
+          explain_sql = build_explain_query(final_sql, connection)
           
           # Execute the EXPLAIN query
           # For PostgreSQL, use select_all which returns ActiveRecord::Result
@@ -182,10 +187,8 @@ module DeadBro
           # This updates the hash that's already in the queries array
           if explain_plan && !explain_plan.to_s.strip.empty?
             query_info[:explain_plan] = explain_plan
-            append_log_to_thread(main_thread, :debug, "Captured EXPLAIN ANALYZE for slow query (#{query_info[:duration_ms]}ms): #{explain_plan[0..1000]}...")
           else
             query_info[:explain_plan] = nil
-            append_log_to_thread(main_thread, :debug, "EXPLAIN ANALYZE returned empty result. Result type: #{result.class}, Result: #{result.inspect[0..200]}")
           end
         rescue => e
           # Silently fail - don't let EXPLAIN break the application
@@ -265,6 +268,46 @@ module DeadBro
         # Generic fallback - just EXPLAIN
         "EXPLAIN #{sql}"
       end
+    end
+
+    def self.interpolate_sql_with_binds(sql, binds, connection)
+      return sql if binds.nil? || binds.empty?
+      return sql unless connection
+
+      interpolated_sql = sql.dup
+      
+      # Handle $1, $2 style placeholders (PostgreSQL)
+      if interpolated_sql.include?("$1")
+        binds.each_with_index do |val, index|
+          # Get value from bind param (handle both raw values and ActiveRecord::Relation::QueryAttribute)
+          value = val
+          if val.respond_to?(:value_for_database)
+            value = val.value_for_database
+          elsif val.respond_to?(:value)
+            value = val.value
+          end
+          
+          quoted_value = connection.quote(value)
+          interpolated_sql = interpolated_sql.gsub("$#{index + 1}", quoted_value)
+        end
+      elsif interpolated_sql.include?("?")
+        # Handle ? style placeholders (MySQL, SQLite)
+        # We need to replace ? one by one in order
+        binds.each do |val|
+          # Get value from bind param
+          value = val
+          if val.respond_to?(:value_for_database)
+            value = val.value_for_database
+          elsif val.respond_to?(:value)
+            value = val.value
+          end
+          
+          quoted_value = connection.quote(value)
+          interpolated_sql = interpolated_sql.sub("?", quoted_value)
+        end
+      end
+      
+      interpolated_sql
     end
 
     def self.format_explain_result(result, connection)
