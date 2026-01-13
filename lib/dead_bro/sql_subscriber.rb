@@ -14,6 +14,7 @@ module DeadBro
     THREAD_LOCAL_ALLOC_RESULTS_KEY = :dead_bro_sql_alloc_results
     THREAD_LOCAL_BACKTRACE_KEY = :dead_bro_sql_backtraces
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
+    MAX_TRACKED_QUERIES = 1000
 
     def self.subscribe!
       # Subscribe with a start/finish listener to measure allocations per query
@@ -63,8 +64,11 @@ module DeadBro
           start_explain_analyze_background(original_sql, data[:connection_id], query_info, binds)
         end
 
-        # Add to thread-local storage
-        Thread.current[THREAD_LOCAL_KEY] << query_info
+        # Add to thread-local storage, but only if we haven't exceeded the limit
+        queries = Thread.current[THREAD_LOCAL_KEY]
+        if queries && queries.length < MAX_TRACKED_QUERIES
+          Thread.current[THREAD_LOCAL_KEY] << query_info
+        end
       end
     end
 
@@ -354,8 +358,12 @@ module DeadBro
         # Fallback to string representation
         result.to_s
       when "mysql", "mysql2", "trilogy"
-        # MySQL returns rows
-        if result.is_a?(Array)
+        # MySQL returns Mysql2::Result object which needs to be converted to array
+        if result.respond_to?(:to_a)
+          # Convert Mysql2::Result to array of hashes
+          rows = result.to_a
+          rows.map { |row| row.is_a?(Hash) ? row.values.join(" | ") : row.to_s }.join("\n")
+        elsif result.is_a?(Array)
           result.map { |row| row.is_a?(Hash) ? row.values.join(" | ") : row.to_s }.join("\n")
         else
           result.to_s

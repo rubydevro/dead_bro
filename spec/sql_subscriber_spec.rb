@@ -289,6 +289,19 @@ RSpec.describe DeadBro::SqlSubscriber do
         expect(formatted).to include("SIMPLE")
         expect(formatted).to include("const")
       end
+
+      it "formats Mysql2::Result object" do
+        # Mock Mysql2::Result object that responds to to_a
+        result = double("Mysql2::Result")
+        rows = [
+          { "id" => 1, "select_type" => "SIMPLE", "table" => "users", "type" => "const" }
+        ]
+        allow(result).to receive(:to_a).and_return(rows)
+        
+        formatted = sql_subscriber.format_explain_result(result, connection)
+        expect(formatted).to include("SIMPLE")
+        expect(formatted).to include("const")
+      end
     end
 
     context "for SQLite" do
