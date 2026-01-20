@@ -16,6 +16,24 @@ module DeadBro
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
     MAX_TRACKED_QUERIES = 1000
 
+    # Check if we should continue tracking based on count and time limits
+    def self.should_continue_tracking?(thread_local_key, max_count)
+      events = Thread.current[thread_local_key]
+      return false unless events
+      
+      # Check count limit
+      return false if events.length >= max_count
+      
+      # Check time limit
+      start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      if start_time
+        elapsed_seconds = Time.now - start_time
+        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
+      end
+      
+      true
+    end
+
     def self.subscribe!
       # Subscribe with a start/finish listener to measure allocations per query
       if ActiveSupport::Notifications.notifier.respond_to?(:subscribe)
@@ -64,9 +82,8 @@ module DeadBro
           start_explain_analyze_background(original_sql, data[:connection_id], query_info, binds)
         end
 
-        # Add to thread-local storage, but only if we haven't exceeded the limit
-        queries = Thread.current[THREAD_LOCAL_KEY]
-        if queries && queries.length < MAX_TRACKED_QUERIES
+        # Add to thread-local storage, but only if we haven't exceeded the limits
+        if should_continue_tracking?(THREAD_LOCAL_KEY, MAX_TRACKED_QUERIES)
           Thread.current[THREAD_LOCAL_KEY] << query_info
         end
       end

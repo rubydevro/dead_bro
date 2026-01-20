@@ -10,6 +10,7 @@ module DeadBro
     RENDER_COLLECTION_EVENT = "render_collection.action_view"
 
     THREAD_LOCAL_KEY = :dead_bro_view_events
+    MAX_TRACKED_EVENTS = 1000
 
     def self.subscribe!(client: Client.new)
       # Track template rendering
@@ -78,9 +79,27 @@ module DeadBro
     end
 
     def self.add_view_event(view_info)
-      if Thread.current[THREAD_LOCAL_KEY]
+      if Thread.current[THREAD_LOCAL_KEY] && should_continue_tracking?
         Thread.current[THREAD_LOCAL_KEY] << view_info
       end
+    end
+
+    # Check if we should continue tracking based on count and time limits
+    def self.should_continue_tracking?
+      events = Thread.current[THREAD_LOCAL_KEY]
+      return false unless events
+      
+      # Check count limit
+      return false if events.length >= MAX_TRACKED_EVENTS
+      
+      # Check time limit
+      start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      if start_time
+        elapsed_seconds = Time.now - start_time
+        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
+      end
+      
+      true
     end
 
     def self.safe_identifier(identifier)

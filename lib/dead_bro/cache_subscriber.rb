@@ -5,6 +5,7 @@ require "active_support/notifications"
 module DeadBro
   class CacheSubscriber
     THREAD_LOCAL_KEY = :dead_bro_cache_events
+    MAX_TRACKED_EVENTS = 1000
 
     EVENTS = [
       "cache_read.active_support",
@@ -24,7 +25,9 @@ module DeadBro
 
           duration_ms = ((finished - started) * 1000.0).round(2)
           event = build_event(name, data, duration_ms)
-          Thread.current[THREAD_LOCAL_KEY] << event if event
+          if event && should_continue_tracking?
+            Thread.current[THREAD_LOCAL_KEY] << event
+          end
         end
       rescue
       end
@@ -40,6 +43,24 @@ module DeadBro
       events = Thread.current[THREAD_LOCAL_KEY]
       Thread.current[THREAD_LOCAL_KEY] = nil
       events || []
+    end
+
+    # Check if we should continue tracking based on count and time limits
+    def self.should_continue_tracking?
+      events = Thread.current[THREAD_LOCAL_KEY]
+      return false unless events
+      
+      # Check count limit
+      return false if events.length >= MAX_TRACKED_EVENTS
+      
+      # Check time limit
+      start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      if start_time
+        elapsed_seconds = Time.now - start_time
+        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
+      end
+      
+      true
     end
 
     def self.build_event(name, data, duration_ms)

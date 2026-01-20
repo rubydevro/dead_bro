@@ -66,4 +66,8 @@ module DeadBro
       ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
     end
   end
+
+  # Shared constant for tracking start time (used by all subscribers)
+  TRACKING_START_TIME_KEY = :dead_bro_tracking_start_time
+  MAX_TRACKING_DURATION_SECONDS = 3600 # 1 hour
 end

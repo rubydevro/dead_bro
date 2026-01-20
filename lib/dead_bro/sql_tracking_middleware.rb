@@ -42,6 +42,9 @@ module DeadBro
 
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
+      
+      # Set tracking start time once for all subscribers (before starting any tracking)
+      Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
 
       @app.call(env)
     ensure
@@ -71,8 +74,9 @@ module DeadBro
         Thread.current[:dead_bro_lightweight_memory] = nil
       end
 
-      # Clean up HTTP events
+      # Clean up HTTP events and tracking start time
       Thread.current[:dead_bro_http_events] = nil
+      Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end
   end
 end

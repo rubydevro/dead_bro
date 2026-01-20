@@ -6,6 +6,8 @@ require "net/http"
 module DeadBro
   module HttpInstrumentation
     EVENT_NAME = "outgoing.http"
+    THREAD_LOCAL_KEY = :dead_bro_http_events
+    MAX_TRACKED_EVENTS = 1000
 
     def self.install!(client: Client.new)
       install_net_http!(client)
@@ -52,8 +54,8 @@ module DeadBro
                   exception: error && error.class.name
                 }
                 # Accumulate per-request; only send with controller metric
-                if Thread.current[:dead_bro_http_events]
-                  Thread.current[:dead_bro_http_events] << payload
+                if Thread.current[THREAD_LOCAL_KEY] && should_continue_tracking?
+                  Thread.current[THREAD_LOCAL_KEY] << payload
                 end
               end
             rescue
@@ -96,8 +98,8 @@ module DeadBro
                   duration_ms: duration_ms
                 }
                 # Accumulate per-request; only send with controller metric
-                if Thread.current[:dead_bro_http_events]
-                  Thread.current[:dead_bro_http_events] << payload
+                if Thread.current[THREAD_LOCAL_KEY] && should_continue_tracking?
+                  Thread.current[THREAD_LOCAL_KEY] << payload
                 end
               end
             rescue
@@ -108,6 +110,24 @@ module DeadBro
 
       ::Typhoeus::Request.prepend(mod) unless ::Typhoeus::Request.ancestors.include?(mod)
     rescue
+    end
+
+    # Check if we should continue tracking based on count and time limits
+    def self.should_continue_tracking?
+      events = Thread.current[THREAD_LOCAL_KEY]
+      return false unless events
+      
+      # Check count limit
+      return false if events.length >= MAX_TRACKED_EVENTS
+      
+      # Check time limit
+      start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      if start_time
+        elapsed_seconds = Time.now - start_time
+        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
+      end
+      
+      true
     end
   end
 end

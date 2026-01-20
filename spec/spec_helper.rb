@@ -1,9 +1,13 @@
 # frozen_string_literal: true
 
-require "simplecov"
-SimpleCov.start do
-  add_filter "/spec/"
-  add_filter "/.bundle/"
+begin
+  require "simplecov"
+  SimpleCov.start do
+    add_filter "/spec/"
+    add_filter "/.bundle/"
+  end
+rescue LoadError
+  # SimpleCov not available, skip coverage
 end
 
 # Load ActiveSupport::Notifications for testing

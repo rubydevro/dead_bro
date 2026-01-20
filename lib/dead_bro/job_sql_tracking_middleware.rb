@@ -7,6 +7,10 @@ module DeadBro
       ActiveSupport::Notifications.subscribe("perform_start.active_job") do |name, started, finished, _unique_id, data|
         # Clear logs for this job
         DeadBro.logger.clear
+        
+        # Set tracking start time once for all subscribers (before starting any tracking)
+        Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
+        
         DeadBro::SqlSubscriber.start_request_tracking
 
         # Start lightweight memory tracking for this job
