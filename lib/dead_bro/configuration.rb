@@ -5,7 +5,8 @@ module DeadBro
     attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev, :memory_tracking_enabled, 
     :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout, 
     :circuit_breaker_retry_timeout, :sample_rate, :excluded_controllers, :excluded_jobs,
-    :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled
+    :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled,
+    :job_queue_monitoring_enabled
 
     def initialize
       @api_key = nil
@@ -28,6 +29,7 @@ module DeadBro
       @deploy_id = resolve_deploy_id
       @slow_query_threshold_ms = 500 # Default: 500ms
       @explain_analyze_enabled = false # Enable EXPLAIN ANALYZE for slow queries by default
+      @job_queue_monitoring_enabled = false # Disabled by default
     end
 
     def resolve_deploy_id

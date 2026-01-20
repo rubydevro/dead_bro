@@ -55,6 +55,13 @@ if defined?(Rails) && defined?(Rails::Railtie)
             DeadBro::JobSqlTrackingMiddleware.subscribe!
             DeadBro::JobSubscriber.subscribe!(client: shared_client)
           end
+
+          # Start job queue monitoring if enabled
+          if DeadBro.configuration.job_queue_monitoring_enabled
+            require "dead_bro/job_queue_monitor"
+            DeadBro.job_queue_monitor = DeadBro::JobQueueMonitor.new(client: shared_client)
+            DeadBro.job_queue_monitor.start
+          end
         rescue
           # Never raise in Railtie init
         end

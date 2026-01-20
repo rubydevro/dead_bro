@@ -18,6 +18,7 @@ module DeadBro
   autoload :MemoryHelpers, "dead_bro/memory_helpers"
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"
+  autoload :JobQueueMonitor, "dead_bro/job_queue_monitor"
   autoload :Logger, "dead_bro/logger"
   begin
     require "dead_bro/railtie"
@@ -65,6 +66,16 @@ module DeadBro
     else
       ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
     end
+  end
+
+  # Returns the job queue monitor instance
+  def self.job_queue_monitor
+    @job_queue_monitor
+  end
+
+  # Sets the job queue monitor instance
+  def self.job_queue_monitor=(monitor)
+    @job_queue_monitor = monitor
   end
 
   # Shared constant for tracking start time (used by all subscribers)
