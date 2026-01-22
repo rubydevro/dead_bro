@@ -58,9 +58,9 @@ if defined?(Rails) && defined?(Rails::Railtie)
 
           # Start job queue monitoring if enabled
           if DeadBro.configuration.job_queue_monitoring_enabled
-            require "dead_bro/job_queue_monitor"
-            DeadBro.job_queue_monitor = DeadBro::JobQueueMonitor.new(client: shared_client)
-            DeadBro.job_queue_monitor.start
+            require "dead_bro/monitor"
+            DeadBro.monitor = DeadBro::Monitor.new(client: shared_client)
+            DeadBro.monitor.start
           end
         rescue
           # Never raise in Railtie init

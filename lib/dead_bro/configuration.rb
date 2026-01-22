@@ -2,11 +2,12 @@
 
 module DeadBro
   class Configuration
-    attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev, :memory_tracking_enabled, 
-    :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout, 
+    attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev, :memory_tracking_enabled,
+    :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
     :circuit_breaker_retry_timeout, :sample_rate, :excluded_controllers, :excluded_jobs,
     :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled,
-    :job_queue_monitoring_enabled
+    :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
+    :disk_paths, :interfaces_ignore
 
     def initialize
       @api_key = nil
@@ -30,6 +31,11 @@ module DeadBro
       @slow_query_threshold_ms = 500 # Default: 500ms
       @explain_analyze_enabled = false # Enable EXPLAIN ANALYZE for slow queries by default
       @job_queue_monitoring_enabled = false # Disabled by default
+      @enable_db_stats = false
+      @enable_process_stats = false
+      @enable_system_stats = false
+      @disk_paths = ["/"]
+      @interfaces_ignore = %w[lo lo0 docker0]
     end
 
     def resolve_deploy_id

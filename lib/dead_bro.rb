@@ -6,6 +6,7 @@ module DeadBro
   autoload :Configuration, "dead_bro/configuration"
   autoload :Client, "dead_bro/client"
   autoload :CircuitBreaker, "dead_bro/circuit_breaker"
+  autoload :Collectors, "dead_bro/collectors"
   autoload :Subscriber, "dead_bro/subscriber"
   autoload :SqlSubscriber, "dead_bro/sql_subscriber"
   autoload :SqlTrackingMiddleware, "dead_bro/sql_tracking_middleware"
@@ -18,7 +19,7 @@ module DeadBro
   autoload :MemoryHelpers, "dead_bro/memory_helpers"
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"
-  autoload :JobQueueMonitor, "dead_bro/job_queue_monitor"
+  autoload :Monitor, "dead_bro/monitor"
   autoload :Logger, "dead_bro/logger"
   begin
     require "dead_bro/railtie"
@@ -68,14 +69,14 @@ module DeadBro
     end
   end
 
-  # Returns the job queue monitor instance
-  def self.job_queue_monitor
-    @job_queue_monitor
+  # Returns the monitor instance
+  def self.monitor
+    @monitor
   end
 
-  # Sets the job queue monitor instance
-  def self.job_queue_monitor=(monitor)
-    @job_queue_monitor = monitor
+  # Sets the monitor instance
+  def self.monitor=(monitor)
+    @monitor = monitor
   end
 
   # Shared constant for tracking start time (used by all subscribers)
