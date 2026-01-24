@@ -87,7 +87,6 @@ module DeadBro
       str[0..(max - 1)]
     end
 
-
     def safe_app_name
       if defined?(Rails) && Rails.respond_to?(:application)
         begin

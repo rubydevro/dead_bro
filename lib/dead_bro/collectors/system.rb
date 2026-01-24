@@ -14,11 +14,11 @@ module DeadBro
     module System
       module_function
 
-      CPU_SAMPLE_KEY = "cpu".freeze
-      MEMINFO_PATH   = "/proc/meminfo".freeze
+      CPU_SAMPLE_KEY = "cpu"
+      MEMINFO_PATH = "/proc/meminfo"
 
       def collect
-        return { enabled: false } unless system_enabled?
+        return {enabled: false} unless system_enabled?
 
         {
           cpu_pct: cpu_percentage,
@@ -27,7 +27,7 @@ module DeadBro
           mem_available_bytes: mem_available_bytes,
           disk: Filesystem.collect
         }
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -37,21 +37,21 @@ module DeadBro
       def system_enabled?
         DeadBro.configuration.respond_to?(:enable_system_stats) &&
           DeadBro.configuration.enable_system_stats
-      rescue StandardError
+      rescue
         false
       end
 
       def linux?
         host_os = RbConfig::CONFIG["host_os"].to_s.downcase
         host_os.include?("linux")
-      rescue StandardError
+      rescue
         false
       end
 
       def macos?
         host_os = RbConfig::CONFIG["host_os"].to_s.downcase
         host_os.include?("darwin")
-      rescue StandardError
+      rescue
         false
       end
 
@@ -61,8 +61,6 @@ module DeadBro
           cpu_percentage_linux
         elsif macos?
           cpu_percentage_macos
-        else
-          nil
         end
       end
 
@@ -72,31 +70,29 @@ module DeadBro
         now = current_time
         current = read_proc_stat
         prev = SampleStore.load(CPU_SAMPLE_KEY)
-        SampleStore.save(CPU_SAMPLE_KEY, { "timestamp" => now, "stat" => current })
+        SampleStore.save(CPU_SAMPLE_KEY, {"timestamp" => now, "stat" => current})
 
         return nil unless prev && prev["stat"].is_a?(Hash) && prev["timestamp"]
 
         cpu_pct_from_samples(prev["stat"], current)
-      rescue StandardError
+      rescue
         nil
       end
 
       def cpu_percentage_macos
         output = `top -l 1 -n 0 | grep "CPU usage"`
-        # Example: CPU usage: 9.38% user, 10.93% sys, 79.68% idle 
-        if output =~ /([\d\.]+)% idle/
+        # Example: CPU usage: 9.38% user, 10.93% sys, 79.68% idle
+        if output =~ /([\d.]+)% idle/
           idle = $1.to_f
           (100.0 - idle).round(2)
-        else
-          nil
         end
-      rescue StandardError
+      rescue
         nil
       end
 
       def current_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      rescue StandardError
+      rescue
         Time.now.to_f
       end
 
@@ -110,10 +106,10 @@ module DeadBro
           values = fields[1..-1].map { |v| v.to_i }
           total = values.sum
           idle = values[3] + values[4] # idle + iowait
-          return { "total" => total, "idle" => idle }
+          return {"total" => total, "idle" => idle}
         end
         {}
-      rescue StandardError
+      rescue
         {}
       end
 
@@ -121,12 +117,12 @@ module DeadBro
       # This is intentionally public so it can be unit tested.
       def cpu_pct_from_samples(prev, current)
         prev_total = prev["total"].to_f
-        prev_idle  = prev["idle"].to_f
-        cur_total  = current["total"].to_f
-        cur_idle   = current["idle"].to_f
+        prev_idle = prev["idle"].to_f
+        cur_total = current["total"].to_f
+        cur_idle = current["idle"].to_f
 
         total_delta = cur_total - prev_total
-        idle_delta  = cur_idle - prev_idle
+        idle_delta = cur_idle - prev_idle
         return nil if total_delta <= 0
 
         usage = (total_delta - idle_delta) / total_delta.to_f
@@ -134,7 +130,7 @@ module DeadBro
         return nil unless pct.finite?
 
         pct.round(2)
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -143,14 +139,18 @@ module DeadBro
 
         info = {}
         File.foreach(MEMINFO_PATH) do |line|
-          key, value, unit = line.split
+          key, value, _ = line.split
           next unless key && value
 
           key = key.sub(":", "")
-          info[key] = Integer(value) rescue nil
+          info[key] = begin
+            Integer(value)
+          rescue
+            nil
+          end
         end
         info
-      rescue StandardError
+      rescue
         {}
       end
 
@@ -162,10 +162,8 @@ module DeadBro
           total_kb * 1024
         elsif macos?
           `sysctl -n hw.memsize`.to_i
-        else
-          nil
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -184,13 +182,13 @@ module DeadBro
           output = `vm_stat`
           pages_free = output[/Pages free:\s+(\d+)/, 1].to_i
           pages_inactive = output[/Pages inactive:\s+(\d+)/, 1].to_i
-          
+
           # MacOS page size is typically 4096 bytes
           (pages_free + pages_inactive) * 4096
         else
           nil
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -200,10 +198,9 @@ module DeadBro
         return nil unless total && avail
 
         total - avail
-      rescue StandardError
+      rescue
         nil
       end
     end
   end
 end
-

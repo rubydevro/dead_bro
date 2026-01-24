@@ -10,22 +10,20 @@ module DeadBro
       module_function
 
       def collect
-        return { disabled: true } unless db_enabled?
-        return { available: false } unless defined?(::ActiveRecord)
+        return {disabled: true} unless db_enabled?
+        return {available: false} unless defined?(::ActiveRecord)
 
         base = ::ActiveRecord::Base
-        return { available: false } unless base.respond_to?(:connection_pool) && base.connection_pool
+        return {available: false} unless base.respond_to?(:connection_pool) && base.connection_pool
 
         pool = safe_connection_pool(base)
 
-        payload = {
+        {
           available: true,
           pool: pool_stats(pool),
           ping_ms: ping_ms(base)
         }
-
-        payload
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -35,7 +33,7 @@ module DeadBro
       def db_enabled?
         DeadBro.configuration.respond_to?(:enable_db_stats) &&
           DeadBro.configuration.enable_db_stats
-      rescue StandardError
+      rescue
         false
       end
 
@@ -43,9 +41,13 @@ module DeadBro
         if base.respond_to?(:connection_pool)
           base.connection_pool
         elsif base.respond_to?(:connection_handler)
-          base.connection_handler.retrieve_connection_pool(base) rescue nil
+          begin
+            base.connection_handler.retrieve_connection_pool(base)
+          rescue
+            nil
+          end
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -53,14 +55,34 @@ module DeadBro
         return {} unless pool
 
         {
-          size:           (safe_integer(pool.size) rescue nil),
-          connections:    (safe_integer(pool.connections.size) rescue nil),
-          busy:           (safe_integer(pool.respond_to?(:busy) ? pool.busy : nil) rescue nil),
-          dead:           (safe_integer(pool.respond_to?(:dead) ? pool.dead : nil) rescue nil),
-          num_waiting:    (safe_integer(pool.respond_to?(:num_waiting) ? pool.num_waiting : nil) rescue nil),
+          size: begin
+            safe_integer(pool.size)
+          rescue
+            nil
+          end,
+          connections: begin
+            safe_integer(pool.connections.size)
+          rescue
+            nil
+          end,
+          busy: begin
+            safe_integer(pool.respond_to?(:busy) ? pool.busy : nil)
+          rescue
+            nil
+          end,
+          dead: begin
+            safe_integer(pool.respond_to?(:dead) ? pool.dead : nil)
+          rescue
+            nil
+          end,
+          num_waiting: begin
+            safe_integer(pool.respond_to?(:num_waiting) ? pool.num_waiting : nil)
+          rescue
+            nil
+          end,
           automatic_reconnect: pool.respond_to?(:automatic_reconnect) ? !!pool.automatic_reconnect : nil
         }
-      rescue StandardError
+      rescue
         {}
       end
 
@@ -68,38 +90,37 @@ module DeadBro
         started = current_time
         base.connection_pool.with_connection do |conn|
           sql = case conn.adapter_name.to_s.downcase
-                when /mysql/
-                  "SELECT 1"
-                when /sqlite/
-                  "SELECT 1"
-                else
-                  "SELECT 1"
-                end
+          when /mysql/
+            "SELECT 1"
+          when /sqlite/
+            "SELECT 1"
+          else
+            "SELECT 1"
+          end
           conn.select_value(sql)
         end
         elapsed_ms(started)
-      rescue StandardError
+      rescue
         nil
       end
 
       def current_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      rescue StandardError
+      rescue
         Time.now.to_f
       end
 
       def elapsed_ms(started)
         ((current_time - started) * 1000.0).round(2)
-      rescue StandardError
+      rescue
         nil
       end
 
       def safe_integer(value)
         Integer(value)
-      rescue StandardError
+      rescue
         nil
       end
     end
   end
 end
-

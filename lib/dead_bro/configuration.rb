@@ -3,11 +3,11 @@
 module DeadBro
   class Configuration
     attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev, :memory_tracking_enabled,
-    :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
-    :circuit_breaker_retry_timeout, :sample_rate, :excluded_controllers, :excluded_jobs,
-    :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled,
-    :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
-    :disk_paths, :interfaces_ignore
+      :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
+      :circuit_breaker_retry_timeout, :sample_rate, :excluded_controllers, :excluded_jobs,
+      :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled,
+      :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
+      :disk_paths, :interfaces_ignore
 
     def initialize
       @api_key = nil
@@ -44,7 +44,7 @@ module DeadBro
 
     def excluded_controller?(controller_name, action_name = nil)
       return false if @excluded_controllers.empty?
-      
+
       # If action_name is provided, check both controller#action patterns and controller-only patterns
       if action_name
         target = "#{controller_name}##{action_name}"
@@ -61,7 +61,7 @@ module DeadBro
         end
         return false
       end
-      
+
       # When action_name is nil, only check controller-only patterns (no #)
       controller_patterns = @excluded_controllers.reject { |pat| pat.to_s.include?("#") }
       return false if controller_patterns.empty?
@@ -84,7 +84,6 @@ module DeadBro
       @exclusive_controllers.any? { |pat| match_name_or_pattern?(target, pat) }
     end
 
-
     def should_sample?
       sample_rate = resolve_sample_rate
       return true if sample_rate >= 100
@@ -93,10 +92,10 @@ module DeadBro
       # Generate random number 1-100 and check if it's within sample rate
       rand(1..100) <= sample_rate
     end
-    
+
     def resolve_sample_rate
       return @sample_rate unless @sample_rate.nil?
-      
+
       if ENV["dead_bro_SAMPLE_RATE"]
         env_value = ENV["dead_bro_SAMPLE_RATE"].to_s.strip
         # Validate that it's a valid integer string
@@ -111,10 +110,10 @@ module DeadBro
         100 # default
       end
     end
-    
+
     def resolve_api_key
       return @api_key unless @api_key.nil?
-      
+
       ENV["DEAD_BRO_API_KEY"]
     end
 
@@ -135,20 +134,19 @@ module DeadBro
       return false if name.nil? || pattern.nil?
       pat = pattern.to_s
       return !!(name.to_s == pat) unless pat.include?("*")
-      
+
       # For controller action patterns (containing '#'), use .* to match any characters including colons
       # For controller-only patterns, use [^:]* to match namespace segments
-      if pat.include?("#")
+      regex = if pat.include?("#")
         # Controller action pattern: allow * to match any characters including colons
-        regex = Regexp.new("^" + Regexp.escape(pat).gsub("\\*", ".*") + "$")
+        Regexp.new("^" + Regexp.escape(pat).gsub("\\*", ".*") + "$")
       else
         # Controller-only pattern: use [^:]* to match namespace segments
-        regex = Regexp.new("^" + Regexp.escape(pat).gsub("\\*", "[^:]*") + "$")
+        Regexp.new("^" + Regexp.escape(pat).gsub("\\*", "[^:]*") + "$")
       end
       !!(name.to_s =~ regex)
     rescue
       false
     end
-
   end
 end

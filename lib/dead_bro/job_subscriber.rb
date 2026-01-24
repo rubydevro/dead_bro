@@ -202,7 +202,6 @@ module DeadBro
       []
     end
 
-
     def self.safe_host
       if defined?(Rails) && Rails.respond_to?(:application)
         begin

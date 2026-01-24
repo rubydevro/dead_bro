@@ -30,7 +30,7 @@ module DeadBro
           fd_count: fd_count,
           gc: gc_stats
         }
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -40,20 +40,20 @@ module DeadBro
       def linux?
         host_os = RbConfig::CONFIG["host_os"].to_s.downcase
         host_os.include?("linux")
-      rescue StandardError
+      rescue
         false
       end
 
       def macos?
         host_os = RbConfig::CONFIG["host_os"].to_s.downcase
         host_os.include?("darwin")
-      rescue StandardError
+      rescue
         false
       end
 
       def safe_hostname
         Socket.gethostname
-      rescue StandardError
+      rescue
         "unknown"
       end
 
@@ -66,7 +66,7 @@ module DeadBro
         else
           process_start_time
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -76,7 +76,7 @@ module DeadBro
 
       def uptime_seconds(now = Time.now.utc)
         (now.to_f - process_start_time.to_f).round(2)
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -85,10 +85,8 @@ module DeadBro
           Rails.version
         elsif defined?(Rails::VERSION) && Rails::VERSION::STRING
           Rails::VERSION::STRING
-        else
-          nil
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -98,7 +96,7 @@ module DeadBro
         else
           rss_from_ps
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -107,11 +105,15 @@ module DeadBro
           next unless line.start_with?("VmRSS:")
 
           parts = line.split
-          value_kb = Integer(parts[1]) rescue nil
+          value_kb = begin
+            Integer(parts[1])
+          rescue
+            nil
+          end
           return value_kb * 1024 if value_kb
         end
         nil
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -120,7 +122,7 @@ module DeadBro
         return nil if rss_kb <= 0
 
         rss_kb * 1024
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -130,13 +132,17 @@ module DeadBro
             next unless line.start_with?("Threads:")
 
             parts = line.split
-            return Integer(parts[1]) rescue nil
+            begin
+              return Integer(parts[1])
+            rescue
+              nil
+            end
           end
           nil
         else
           Thread.list.size
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -149,7 +155,7 @@ module DeadBro
           # Best-effort: count file descriptors under /proc when available
           nil
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -164,10 +170,9 @@ module DeadBro
           major_gc_count: stats[:major_gc_count],
           minor_gc_count: stats[:minor_gc_count]
         }
-      rescue StandardError
+      rescue
         {}
       end
     end
   end
 end
-

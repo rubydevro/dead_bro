@@ -18,7 +18,7 @@ module DeadBro
 
       # Check sampling rate - skip if not selected for sampling
       return unless @configuration.should_sample?
-      
+
       # Check circuit breaker before making request
       if @circuit_breaker && @configuration.circuit_breaker_enabled
         if @circuit_breaker.state == :open

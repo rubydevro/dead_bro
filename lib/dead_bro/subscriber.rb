@@ -166,7 +166,6 @@ module DeadBro
       end
     end
 
-
     def self.safe_params(data)
       return {} unless data[:params]
 

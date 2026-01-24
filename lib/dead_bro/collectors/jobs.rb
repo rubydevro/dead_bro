@@ -30,9 +30,8 @@ module DeadBro
 
         # Optional collectors moved to Monitor
 
-
         payload
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -70,18 +69,54 @@ module DeadBro
         begin
           sidekiq_stats = safe_sidekiq_stats
           if sidekiq_stats
-            stats[:processed]      = sidekiq_stats.processed rescue nil
-            stats[:failed]         = sidekiq_stats.failed rescue nil
-            stats[:enqueued]       = sidekiq_stats.enqueued rescue nil
-            stats[:scheduled_size] = sidekiq_stats.scheduled_size rescue nil
-            stats[:retry_size]     = sidekiq_stats.retry_size rescue nil
-            stats[:dead_size]      = sidekiq_stats.dead_size rescue nil
-            stats[:workers_size]   = sidekiq_stats.workers_size rescue nil
-            stats[:processes_size] = sidekiq_stats.processes_size rescue nil
+            stats[:processed] = begin
+              sidekiq_stats.processed
+            rescue
+              nil
+            end
+            stats[:failed] = begin
+              sidekiq_stats.failed
+            rescue
+              nil
+            end
+            stats[:enqueued] = begin
+              sidekiq_stats.enqueued
+            rescue
+              nil
+            end
+            stats[:scheduled_size] = begin
+              sidekiq_stats.scheduled_size
+            rescue
+              nil
+            end
+            stats[:retry_size] = begin
+              sidekiq_stats.retry_size
+            rescue
+              nil
+            end
+            stats[:dead_size] = begin
+              sidekiq_stats.dead_size
+            rescue
+              nil
+            end
+            stats[:workers_size] = begin
+              sidekiq_stats.workers_size
+            rescue
+              nil
+            end
+            stats[:processes_size] = begin
+              sidekiq_stats.processes_size
+            rescue
+              nil
+            end
           end
 
           # Per-queue size and latency
-          queue_class = Sidekiq.const_get(:Queue) rescue nil
+          queue_class = begin
+            Sidekiq.const_get(:Queue)
+          rescue
+            nil
+          end
           if queue_class && queue_class.respond_to?(:all)
             queue_class.all.each do |queue|
               stats[:queues] << {
@@ -94,15 +129,19 @@ module DeadBro
 
           # Process RSS at collection time (best-effort)
           if DeadBro.configuration.respond_to?(:enable_process_stats) && DeadBro.configuration.enable_process_stats
-            stats[:memory_rss_bytes] = ProcessInfo.rss_bytes rescue nil
+            stats[:memory_rss_bytes] = begin
+              ProcessInfo.rss_bytes
+            rescue
+              nil
+            end
           end
-        rescue StandardError => e
+        rescue => e
           stats[:error_class] = e.class.name
           stats[:error_message] = e.message.to_s[0, 500]
         end
 
         stats
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -118,19 +157,27 @@ module DeadBro
 
       def safe_integer(value)
         Integer(value)
-      rescue StandardError
+      rescue
         nil
       end
 
       def safe_latency(queue)
-        latency = queue.latency rescue nil
+        latency = begin
+          queue.latency
+        rescue
+          nil
+        end
         return nil unless latency
 
-        value = Float(latency) rescue nil
+        value = begin
+          Float(latency)
+        rescue
+          nil
+        end
         return nil unless value && value.finite?
 
         value
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -141,7 +188,7 @@ module DeadBro
         return {} unless defined?(ActiveRecord)
         return {} unless ActiveRecord::Base.respond_to?(:connected?) && ActiveRecord::Base.connected?
 
-        stats = { total_queued: 0, total_busy: 0, queues: {} }
+        stats = {total_queued: 0, total_busy: 0, queues: {}}
 
         begin
           conn = ActiveRecord::Base.connection
@@ -152,7 +199,7 @@ module DeadBro
           parse_query_result(result).each do |row|
             queue_name = (row["queue_name"] || row[:queue_name] || "default").to_s
             count = (row["count"] || row[:count] || 0).to_i
-            stats[:queues][queue_name] = { queued: count, busy: 0, scheduled: 0, retries: 0 }
+            stats[:queues][queue_name] = {queued: count, busy: 0, scheduled: 0, retries: 0}
             stats[:total_queued] += count
           end
 
@@ -161,7 +208,7 @@ module DeadBro
           parse_query_result(result).each do |row|
             queue_name = (row["queue_name"] || row[:queue_name] || "default").to_s
             count = (row["count"] || row[:count] || 0).to_i
-            stats[:queues][queue_name] ||= { queued: 0, busy: 0, scheduled: 0, retries: 0 }
+            stats[:queues][queue_name] ||= {queued: 0, busy: 0, scheduled: 0, retries: 0}
             stats[:queues][queue_name][:busy] = count
             stats[:total_busy] += count
           end
@@ -177,13 +224,13 @@ module DeadBro
             failed_count = parse_query_result(result).first
             stats[:total_failed] = (failed_count&.dig("count") || failed_count&.dig(:count) || 0).to_i
           end
-        rescue StandardError => e
+        rescue => e
           stats[:error_class] = e.class.name
           stats[:error_message] = e.message.to_s[0, 500]
         end
 
         stats
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -196,7 +243,7 @@ module DeadBro
         return {} unless defined?(Delayed::Job)
         return {} unless defined?(ActiveRecord)
 
-        stats = { total_queued: 0, total_busy: 0, queues: {} }
+        stats = {total_queued: 0, total_busy: 0, queues: {}}
 
         begin
           return stats unless ActiveRecord::Base.connection.table_exists?("delayed_jobs")
@@ -204,7 +251,7 @@ module DeadBro
           # queued jobs
           queued = Delayed::Job.where("locked_at IS NULL AND attempts < max_attempts").count
           stats[:total_queued] = queued
-          stats[:queues]["default"] = { queued: queued, busy: 0, scheduled: 0, retries: 0 }
+          stats[:queues]["default"] = {queued: queued, busy: 0, scheduled: 0, retries: 0}
 
           # busy jobs
           busy = Delayed::Job.where("locked_at IS NOT NULL AND locked_by IS NOT NULL").count
@@ -214,13 +261,13 @@ module DeadBro
           # failed jobs
           failed = Delayed::Job.where("attempts >= max_attempts").count
           stats[:total_failed] = failed
-        rescue StandardError => e
+        rescue => e
           stats[:error_class] = e.class.name
           stats[:error_message] = e.message.to_s[0, 500]
         end
 
         stats
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -234,7 +281,7 @@ module DeadBro
         return {} unless defined?(ActiveRecord)
         return {} unless ActiveRecord::Base.respond_to?(:connected?) && ActiveRecord::Base.connected?
 
-        stats = { total_queued: 0, total_busy: 0, queues: {} }
+        stats = {total_queued: 0, total_busy: 0, queues: {}}
 
         begin
           conn = ActiveRecord::Base.connection
@@ -245,7 +292,7 @@ module DeadBro
           parse_query_result(result).each do |row|
             queue_name = (row["queue_name"] || row[:queue_name] || "default").to_s
             count = (row["count"] || row[:count] || 0).to_i
-            stats[:queues][queue_name] = { queued: count, busy: 0, scheduled: 0, retries: 0 }
+            stats[:queues][queue_name] = {queued: count, busy: 0, scheduled: 0, retries: 0}
             stats[:total_queued] += count
           end
 
@@ -254,7 +301,7 @@ module DeadBro
           parse_query_result(result).each do |row|
             queue_name = (row["queue_name"] || row[:queue_name] || "default").to_s
             count = (row["count"] || row[:count] || 0).to_i
-            stats[:queues][queue_name] ||= { queued: 0, busy: 0, scheduled: 0, retries: 0 }
+            stats[:queues][queue_name] ||= {queued: 0, busy: 0, scheduled: 0, retries: 0}
             stats[:queues][queue_name][:busy] = count
             stats[:total_busy] += count
           end
@@ -268,13 +315,13 @@ module DeadBro
           result = conn.execute("SELECT COUNT(*) as count FROM good_jobs WHERE finished_at IS NOT NULL AND error IS NOT NULL")
           failed_count = parse_query_result(result).first
           stats[:total_failed] = (failed_count&.dig("count") || failed_count&.dig(:count) || 0).to_i
-        rescue StandardError => e
+        rescue => e
           stats[:error_class] = e.class.name
           stats[:error_message] = e.message.to_s[0, 500]
         end
 
         stats
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -286,7 +333,15 @@ module DeadBro
       def parse_query_result(result)
         if result.respond_to?(:each)
           if result.respond_to?(:values)
-            columns = result.fields rescue result.column_names rescue []
+            begin
+              columns = begin
+                result.fields
+              rescue
+                result.column_names
+              end
+            rescue
+              []
+            end
             result.values.map do |row|
               columns.each_with_index.each_with_object({}) do |(col, idx), hash|
                 hash[col.to_s] = row[idx]
@@ -301,43 +356,48 @@ module DeadBro
         else
           []
         end
-      rescue StandardError
+      rescue
         []
       end
 
       def safe_app_name
         if defined?(Rails) && Rails.respond_to?(:application) && Rails.application
-          Rails.application.class.module_parent_name rescue Rails.application.class.name
-        else
-          nil
+          begin
+            Rails.application.class.module_parent_name
+          rescue
+            Rails.application.class.name
+          end
         end
-      rescue StandardError
+      rescue
         nil
       end
 
       def process_hostname
         if defined?(ProcessInfo)
-          ProcessInfo.safe_hostname rescue default_hostname
+          begin
+            ProcessInfo.safe_hostname
+          rescue
+            default_hostname
+          end
         else
           default_hostname
         end
-      rescue StandardError
+      rescue
         default_hostname
       end
 
       def default_hostname
         require "socket"
         Socket.gethostname
-      rescue StandardError
+      rescue
         "unknown"
       end
 
       def safe_collect
         yield
-      rescue StandardError => e
-        { error_class: e.class.name, error_message: e.message.to_s[0, 500] }
+      rescue => e
+        {error_class: e.class.name, error_message: e.message.to_s[0, 500]}
       end
     end
   end
 end
-

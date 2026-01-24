@@ -35,7 +35,7 @@ module DeadBro
   def self.configuration
     @configuration ||= Configuration.new
   end
-  
+
   def self.reset_configuration!
     @configuration = nil
     @client = nil

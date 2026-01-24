@@ -20,17 +20,17 @@ module DeadBro
     def self.should_continue_tracking?(thread_local_key, max_count)
       events = Thread.current[thread_local_key]
       return false unless events
-      
+
       # Check count limit
       return false if events.length >= max_count
-      
+
       # Check time limit
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
       if start_time
         elapsed_seconds = Time.now - start_time
         return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
       end
-      
+
       true
     end
 
@@ -102,10 +102,10 @@ module DeadBro
       # This must happen BEFORE we get the queries array reference to ensure
       # all explain_plan fields are populated
       wait_for_pending_explains(5.0) # 5 second timeout
-      
+
       # Get queries after waiting for EXPLAIN to complete
       queries = Thread.current[THREAD_LOCAL_KEY]
-      
+
       Thread.current[THREAD_LOCAL_KEY] = nil
       Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = nil
       Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = nil
@@ -117,12 +117,12 @@ module DeadBro
     def self.wait_for_pending_explains(timeout_seconds)
       pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY]
       return unless pending && !pending.empty?
-      
+
       start_time = Time.now
       pending.each do |thread|
         remaining_time = timeout_seconds - (Time.now - start_time)
         break if remaining_time <= 0
-        
+
         begin
           thread.join(remaining_time)
         rescue => e
@@ -152,7 +152,7 @@ module DeadBro
       return false if duration_ms < DeadBro.configuration.slow_query_threshold_ms
       return false unless sql.is_a?(String)
       return false if sql.strip.empty?
-      
+
       # Skip EXPLAIN for certain query types that don't benefit from it
       sql_upper = sql.upcase.strip
       return false if sql_upper.start_with?("EXPLAIN")
@@ -161,55 +161,53 @@ module DeadBro
       return false if sql_upper.start_with?("ROLLBACK")
       return false if sql_upper.start_with?("SAVEPOINT")
       return false if sql_upper.start_with?("RELEASE")
-      
+
       true
     end
 
     def self.start_explain_analyze_background(sql, connection_id, query_info, binds = nil)
       return unless defined?(ActiveRecord)
       return unless ActiveRecord::Base.respond_to?(:connection)
-      
+
       # Capture the main thread reference to append logs to the correct thread
       main_thread = Thread.current
-      
+
       # Run EXPLAIN in a background thread to avoid blocking the main request
       explain_thread = Thread.new do
         connection = nil
         begin
           # Use a separate connection to avoid interfering with the main query
-          if ActiveRecord::Base.connection_pool.respond_to?(:checkout)
-            connection = ActiveRecord::Base.connection_pool.checkout
+          connection = if ActiveRecord::Base.connection_pool.respond_to?(:checkout)
+            ActiveRecord::Base.connection_pool.checkout
           else
-            connection = ActiveRecord::Base.connection
+            ActiveRecord::Base.connection
           end
-          
+
           # Interpolate binds if present to ensure EXPLAIN works with placeholders
           final_sql = interpolate_sql_with_binds(sql, binds, connection)
-          
+
           # Build EXPLAIN query based on database adapter
           explain_sql = build_explain_query(final_sql, connection)
-          
+
           # Execute the EXPLAIN query
           # For PostgreSQL, use select_all which returns ActiveRecord::Result
           # For other databases, use execute
           adapter_name = connection.adapter_name.downcase
-          if adapter_name == "postgresql" || adapter_name == "postgis"
+          result = if adapter_name == "postgresql" || adapter_name == "postgis"
             # PostgreSQL: select_all returns ActiveRecord::Result with rows
-            result = connection.select_all(explain_sql)
+            connection.select_all(explain_sql)
           else
             # Other databases: use execute
-            result = connection.execute(explain_sql)
+            connection.execute(explain_sql)
           end
-          
+
           # Format the result based on database adapter
           explain_plan = format_explain_result(result, connection)
-          
+
           # Update the query_info with the explain plan
           # This updates the hash that's already in the queries array
-          if explain_plan && !explain_plan.to_s.strip.empty?
-            query_info[:explain_plan] = explain_plan
-          else
-            query_info[:explain_plan] = nil
+          query_info[:explain_plan] = if explain_plan && !explain_plan.to_s.strip.empty?
+            explain_plan
           end
         rescue => e
           # Silently fail - don't let EXPLAIN break the application
@@ -218,11 +216,15 @@ module DeadBro
         ensure
           # Return connection to pool if we checked it out
           if connection && ActiveRecord::Base.connection_pool.respond_to?(:checkin)
-            ActiveRecord::Base.connection_pool.checkin(connection) rescue nil
+            begin
+              ActiveRecord::Base.connection_pool.checkin(connection)
+            rescue
+              nil
+            end
           end
         end
       end
-      
+
       # Track the thread so we can wait for it when stopping request tracking
       pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] ||= []
       pending << explain_thread
@@ -274,7 +276,7 @@ module DeadBro
 
     def self.build_explain_query(sql, connection)
       adapter_name = connection.adapter_name.downcase
-      
+
       case adapter_name
       when "postgresql", "postgis"
         # PostgreSQL supports ANALYZE and BUFFERS
@@ -296,7 +298,7 @@ module DeadBro
       return sql unless connection
 
       interpolated_sql = sql.dup
-      
+
       # Handle $1, $2 style placeholders (PostgreSQL)
       if interpolated_sql.include?("$1")
         binds.each_with_index do |val, index|
@@ -307,7 +309,7 @@ module DeadBro
           elsif val.respond_to?(:value)
             value = val.value
           end
-          
+
           quoted_value = connection.quote(value)
           interpolated_sql = interpolated_sql.gsub("$#{index + 1}", quoted_value)
         end
@@ -322,18 +324,18 @@ module DeadBro
           elsif val.respond_to?(:value)
             value = val.value
           end
-          
+
           quoted_value = connection.quote(value)
           interpolated_sql = interpolated_sql.sub("?", quoted_value)
         end
       end
-      
+
       interpolated_sql
     end
 
     def self.format_explain_result(result, connection)
       adapter_name = connection.adapter_name.downcase
-      
+
       case adapter_name
       when "postgresql", "postgis"
         # PostgreSQL returns ActiveRecord::Result from select_all
@@ -343,12 +345,12 @@ module DeadBro
           plan_text = result.rows.map { |row| row.is_a?(Array) ? row.first.to_s : row.to_s }.join("\n")
           return plan_text unless plan_text.strip.empty?
         end
-        
+
         # Try alternative methods to extract the plan
         if result.respond_to?(:each) && result.respond_to?(:columns)
           # ActiveRecord::Result with columns
           plan_column = result.columns.find { |col| col.downcase.include?("plan") || col.downcase.include?("query") } || result.columns.first
-          plan_text = result.map { |row| 
+          plan_text = result.map { |row|
             if row.is_a?(Hash)
               row[plan_column] || row[plan_column.to_sym] || row.values.first
             else
@@ -357,7 +359,7 @@ module DeadBro
           }.join("\n")
           return plan_text unless plan_text.strip.empty?
         end
-        
+
         if result.is_a?(Array)
           # Array of hashes or arrays
           plan_text = result.map do |row|
@@ -371,7 +373,7 @@ module DeadBro
           end.join("\n")
           return plan_text unless plan_text.strip.empty?
         end
-        
+
         # Fallback to string representation
         result.to_s
       when "mysql", "mysql2", "trilogy"
@@ -396,7 +398,7 @@ module DeadBro
         # Generic fallback
         result.to_s
       end
-    rescue => e
+    rescue
       # Fallback to string representation
       result.to_s
     end

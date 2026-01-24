@@ -13,12 +13,12 @@ module DeadBro
 
       def collect
         paths = disk_paths
-        return { paths: [] } if paths.nil? || paths.empty?
+        return {paths: []} if paths.nil? || paths.empty?
 
         {
           paths: paths.map { |path| stats_for_path(path) }.compact
         }
-      rescue StandardError => e
+      rescue => e
         {
           error_class: e.class.name,
           error_message: e.message.to_s[0, 500]
@@ -31,7 +31,7 @@ module DeadBro
         else
           ["/"]
         end
-      rescue StandardError
+      rescue
         ["/"]
       end
 
@@ -41,7 +41,7 @@ module DeadBro
         else
           df_stats(path)
         end
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -53,7 +53,7 @@ module DeadBro
           disk_free_bytes: stat.blocks_available * stat.block_size,
           disk_available_bytes: stat.blocks_available * stat.block_size
         }
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -64,12 +64,20 @@ module DeadBro
         lines = output.to_s.split("\n")
         return nil if lines.size < 2
 
-        header = lines[0]
+        lines[0]
         data = lines[1]
         parts = data.split
         # POSIX df: Filesystem 1K-blocks Used Available Use% Mounted on
-        total_kb = Integer(parts[1]) rescue nil
-        avail_kb = Integer(parts[3]) rescue nil
+        total_kb = begin
+          Integer(parts[1])
+        rescue
+          nil
+        end
+        avail_kb = begin
+          Integer(parts[3])
+        rescue
+          nil
+        end
         return nil unless total_kb && avail_kb
 
         {
@@ -78,10 +86,9 @@ module DeadBro
           disk_free_bytes: avail_kb * 1024,
           disk_available_bytes: avail_kb * 1024
         }
-      rescue StandardError
+      rescue
         nil
       end
     end
   end
 end
-

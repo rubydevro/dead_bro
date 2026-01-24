@@ -9,10 +9,10 @@ RSpec.describe DeadBro::Collectors::Database do
       allow(DeadBro.configuration).to receive(:enable_db_stats).and_return(true)
     end
 
-      it "returns available: false" do
-        hide_const("ActiveRecord")
-        expect(described_class.collect).to eq(available: false)
-      end
+    it "returns available: false" do
+      hide_const("ActiveRecord")
+      expect(described_class.collect).to eq(available: false)
+    end
 
     context "when ActiveRecord is defined" do
       let(:ar_base) { Class.new }
@@ -38,12 +38,12 @@ RSpec.describe DeadBro::Collectors::Database do
 
       it "uses with_connection for ping" do
         allow(described_class).to receive(:current_time).and_return(1000.0, 1000.1)
-        
+
         connection = double("Connection", adapter_name: "PostgreSQL")
         expect(connection).to receive(:select_value).with("SELECT 1")
-        
+
         expect(connection_pool).to receive(:with_connection).and_yield(connection)
-        
+
         described_class.ping_ms(ar_base)
       end
     end

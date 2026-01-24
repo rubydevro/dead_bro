@@ -93,8 +93,6 @@ RSpec.describe DeadBro::Monitor do
     end
   end
 
-
-
   describe "#log_error" do
     it "logs to Rails logger when available" do
       rails_logger = double("Rails.logger")
@@ -127,21 +125,21 @@ RSpec.describe DeadBro::Monitor do
 
   describe "integration with client" do
     it "calls post_monitor_stats with collected stats" do
-      fake_jobs_payload = { queue_system: :sidekiq }
-      fake_network_payload = { available: true }
-      
+      fake_jobs_payload = {queue_system: :sidekiq}
+      fake_network_payload = {available: true}
+
       allow(DeadBro::Collectors::Jobs).to receive(:collect).and_return(fake_jobs_payload)
       allow(DeadBro::Collectors::Network).to receive(:collect).and_return(fake_network_payload)
-      
+
       # Stub optional collectors if they are called (depending on default config)
       # Assuming default config might fail if not stubbed, or we can explicity enable them
       allow(DeadBro.configuration).to receive(:enable_db_stats).and_return(true)
       allow(DeadBro.configuration).to receive(:enable_process_stats).and_return(true)
       allow(DeadBro.configuration).to receive(:enable_system_stats).and_return(true)
-      
-      allow(DeadBro::Collectors::Database).to receive(:collect).and_return({ db: "stats" })
-      allow(DeadBro::Collectors::ProcessInfo).to receive(:collect).and_return({ process: "stats" })
-      allow(DeadBro::Collectors::System).to receive(:collect).and_return({ system: "stats" })
+
+      allow(DeadBro::Collectors::Database).to receive(:collect).and_return({db: "stats"})
+      allow(DeadBro::Collectors::ProcessInfo).to receive(:collect).and_return({process: "stats"})
+      allow(DeadBro::Collectors::System).to receive(:collect).and_return({system: "stats"})
 
       expect(client).to receive(:post_monitor_stats).with(hash_including(
         :environment,

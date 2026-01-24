@@ -76,14 +76,14 @@ module DeadBro
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
         Rails.logger.error("[DeadBro::Monitor] #{message}")
       else
-        $stderr.puts("[DeadBro::Monitor] #{message}")
+        warn("[DeadBro::Monitor] #{message}")
       end
     end
 
     def safe_collect
       yield
-    rescue StandardError => e
-      { error_class: e.class.name, error_message: e.message.to_s[0, 500] }
+    rescue => e
+      {error_class: e.class.name, error_message: e.message.to_s[0, 500]}
     end
   end
 end

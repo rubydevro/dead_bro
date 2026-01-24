@@ -10,12 +10,11 @@ end
 if defined?(Rails) && defined?(Rails::Railtie)
   module DeadBro
     class Railtie < ::Rails::Railtie
-
       initializer "dead_bro.subscribe" do |app|
         app.config.after_initialize do
           # Use the shared Client instance for all subscribers
           shared_client = DeadBro.client
-          
+
           DeadBro::Subscriber.subscribe!(client: shared_client)
           # Install outgoing HTTP instrumentation
           require "dead_bro/http_instrumentation"
@@ -70,7 +69,7 @@ if defined?(Rails) && defined?(Rails::Railtie)
       # Insert Rack middleware early enough to observe uncaught exceptions
       initializer "dead_bro.middleware" do |app|
         require "dead_bro/error_middleware"
-        
+
         # Use the shared Client instance for the middleware
         shared_client = DeadBro.client
 

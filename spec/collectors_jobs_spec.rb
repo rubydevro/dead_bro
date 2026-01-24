@@ -29,8 +29,7 @@ RSpec.describe DeadBro::Collectors::Jobs do
         retry_size: 1,
         dead_size: 0,
         workers_size: 1,
-        processes_size: 1
-      )
+        processes_size: 1)
 
       queue = double("Sidekiq::Queue", name: "default", size: 3, latency: 1.5)
       queue_class = double("Sidekiq::QueueClass", all: [queue])
@@ -103,8 +102,7 @@ RSpec.describe DeadBro::Collectors::Jobs do
         retry_size: 3,
         dead_size: 1,
         workers_size: 4,
-        processes_size: 1
-      )
+        processes_size: 1)
     end
 
     context "when Sidekiq is not defined" do
@@ -148,7 +146,7 @@ RSpec.describe DeadBro::Collectors::Jobs do
 
   describe ".collect_solid_queue_stats" do
     let(:connection) { double("ActiveRecord::Base.connection") }
-    let(:query_result) { [{ "queue_name" => "default", "count" => "5" }] }
+    let(:query_result) { [{"queue_name" => "default", "count" => "5"}] }
 
     before do
       stub_const("SolidQueue", Module.new)
@@ -216,7 +214,7 @@ RSpec.describe DeadBro::Collectors::Jobs do
 
   describe ".collect_good_job_stats" do
     let(:connection) { double("ActiveRecord::Base.connection") }
-    let(:query_result) { [{ "queue_name" => "default", "count" => "3" }] }
+    let(:query_result) { [{"queue_name" => "default", "count" => "3"}] }
 
     before do
       stub_const("GoodJob", Module.new)
@@ -246,4 +244,3 @@ RSpec.describe DeadBro::Collectors::Jobs do
     end
   end
 end
-

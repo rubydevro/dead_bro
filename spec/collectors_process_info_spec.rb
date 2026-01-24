@@ -48,10 +48,9 @@ RSpec.describe DeadBro::Collectors::ProcessInfo do
       it "uses ps command" do
         # Mock ps output: "1024" (kb)
         allow(described_class).to receive(:`).with(/ps -o rss=/).and_return("  1024\n")
-        
+
         expect(described_class.rss_bytes).to eq(1024 * 1024)
       end
     end
   end
 end
-

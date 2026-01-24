@@ -17,18 +17,18 @@ module DeadBro
 
       def load(key)
         load_from_redis(key) || load_from_file(key)
-      rescue StandardError
+      rescue
         nil
       end
 
       def save(key, data)
         save_to_redis(key, data)
-      rescue StandardError
+      rescue
         # If Redis is unavailable or fails, fall back to file-based storage
       ensure
         begin
           save_to_file(key, data)
-        rescue StandardError
+        rescue
           # Completely best-effort
         end
       end
@@ -40,7 +40,7 @@ module DeadBro
         return nil unless raw
 
         JSON.parse(raw)
-      rescue StandardError
+      rescue
         nil
       end
 
@@ -50,7 +50,7 @@ module DeadBro
         Sidekiq.redis do |r|
           r.set(redis_key(key), JSON.dump(data), ex: 300) # keep for 5 minutes
         end
-      rescue StandardError
+      rescue
         # Best-effort only
       end
 
@@ -61,13 +61,13 @@ module DeadBro
         File.open(path, "r") do |f|
           JSON.parse(f.read)
         end
-      rescue StandardError
+      rescue
         nil
       end
 
       def save_to_file(key, data)
         path = file_path(key)
-        dir  = File.dirname(path)
+        dir = File.dirname(path)
         Dir.mkdir(dir) unless Dir.exist?(dir)
 
         File.open(path, File::RDWR | File::CREAT, 0o600) do |f|
@@ -78,19 +78,19 @@ module DeadBro
         ensure
           begin
             f.flock(File::LOCK_UN)
-          rescue StandardError
+          rescue
           end
         end
-      rescue StandardError
+      rescue
         # Best-effort only
       end
 
       def redis_key(key)
-        env  = DeadBro.env
+        env = DeadBro.env
         host = begin
           require "socket"
           Socket.gethostname
-        rescue StandardError
+        rescue
           "unknown"
         end
 
@@ -100,10 +100,9 @@ module DeadBro
       def file_path(key)
         digest = Digest::SHA256.hexdigest(key.to_s)[0, 16]
         File.join(Dir.tmpdir, "dead_bro_metrics_#{digest}.json")
-      rescue StandardError
-        "/tmp/dead_bro_metrics_#{key.to_s.gsub(/[^a-zA-Z0-9]/, '_')}.json"
+      rescue
+        "/tmp/dead_bro_metrics_#{key.to_s.gsub(/[^a-zA-Z0-9]/, "_")}.json"
       end
     end
   end
 end
-

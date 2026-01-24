@@ -103,8 +103,6 @@ RSpec.describe DeadBro do
       ENV.delete("DEAD_BRO_API_KEY")
     end
 
-
-
     it "resolves deploy_id from GIT_REV" do
       config = DeadBro::Configuration.new
       config.deploy_id = nil
