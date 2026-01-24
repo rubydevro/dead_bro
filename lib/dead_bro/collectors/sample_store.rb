@@ -86,7 +86,7 @@ module DeadBro
       end
 
       def redis_key(key)
-        env  = DeadBro.env rescue "unknown"
+        env  = DeadBro.env
         host = begin
           require "socket"
           Socket.gethostname

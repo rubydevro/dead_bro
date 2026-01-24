@@ -25,7 +25,6 @@ module DeadBro
           mem_used_bytes: mem_used_bytes,
           mem_total_bytes: mem_total_bytes,
           mem_available_bytes: mem_available_bytes,
-          disk: Filesystem.collect,
           disk: Filesystem.collect
         }
       rescue StandardError => e

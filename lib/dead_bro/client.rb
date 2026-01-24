@@ -123,7 +123,6 @@ module DeadBro
     end
 
     def make_monitor_request(payload, api_key)
-      puts "Making monitor request"
       use_staging = ENV["USE_STAGING_ENDPOINT"] && !ENV["USE_STAGING_ENDPOINT"].empty?
       production_url = use_staging ? "https://deadbro.aberatii.com/apm/v1/monitor" : "https://www.deadbro.com/apm/v1/monitor"
       endpoint_url = @configuration.ruby_dev ? "http://localhost:3100/apm/v1/monitor" : production_url

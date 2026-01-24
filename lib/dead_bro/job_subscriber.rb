@@ -75,7 +75,7 @@ module DeadBro
           duration_ms: duration_ms,
           status: "completed",
           sql_queries: sql_queries,
-          rails_env: safe_rails_env,
+          rails_env: DeadBro.env,
           host: safe_host,
           memory_usage: memory_usage_mb,
           gc_stats: gc_stats,
@@ -154,7 +154,7 @@ module DeadBro
           exception_class: exception&.class&.name,
           message: exception&.message&.to_s&.[](0, 1000),
           backtrace: Array(exception&.backtrace).first(50),
-          rails_env: safe_rails_env,
+          rails_env: DeadBro.env,
           host: safe_host,
           memory_usage: memory_usage_mb,
           gc_stats: gc_stats,
@@ -202,15 +202,6 @@ module DeadBro
       []
     end
 
-    def self.safe_rails_env
-      if defined?(Rails) && Rails.respond_to?(:env)
-        Rails.env
-      else
-        ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
-      end
-    rescue
-      "development"
-    end
 
     def self.safe_host
       if defined?(Rails) && Rails.respond_to?(:application)

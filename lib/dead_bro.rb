@@ -67,6 +67,8 @@ module DeadBro
     else
       ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
     end
+  rescue
+    "development"
   end
 
   # Returns the monitor instance

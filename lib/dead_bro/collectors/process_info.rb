@@ -24,7 +24,7 @@ module DeadBro
           uptime_s: uptime_seconds(now),
           ruby_version: RUBY_VERSION,
           rails_version: safe_rails_version,
-          app_env: Rails.env,
+          app_env: DeadBro.env,
           rss_bytes: rss_bytes,
           thread_count: thread_count,
           fd_count: fd_count,
