@@ -1,0 +1,89 @@
+# frozen_string_literal: true
+
+module DeadBro
+  class Monitor
+    def initialize(client: DeadBro.client)
+      @client = client
+      @thread = nil
+      @running = false
+    end
+
+    def start
+      return if @running
+      return unless DeadBro.configuration.job_queue_monitoring_enabled
+      return unless DeadBro.configuration.enabled
+
+      @running = true
+      @thread = Thread.new do
+        Thread.current.abort_on_exception = false
+        loop do
+          break unless @running
+
+          begin
+            collect_and_send_stats
+          rescue => e
+            log_error("Error collecting stats: #{e.message}")
+          end
+
+          # Sleep for 60 seconds (1 minute)
+          sleep(60)
+        end
+      end
+
+      @thread
+    end
+
+    def stop
+      @running = false
+      @thread&.join(5) # Wait up to 5 seconds for thread to finish
+      @thread = nil
+    end
+
+    private
+
+    def collect_and_send_stats
+      payload = {
+        environment: DeadBro.env,
+        host: process_hostname,
+        pid: Process.pid,
+        current_time: Time.now.utc.iso8601,
+        jobs: DeadBro::Collectors::Jobs.collect,
+        network: DeadBro::Collectors::Network.collect
+      }
+
+      if DeadBro.configuration.respond_to?(:enable_db_stats) && DeadBro.configuration.enable_db_stats
+        payload[:db] = safe_collect { DeadBro::Collectors::Database.collect }
+      end
+
+      if DeadBro.configuration.respond_to?(:enable_process_stats) && DeadBro.configuration.enable_process_stats
+        payload[:process] = safe_collect { DeadBro::Collectors::ProcessInfo.collect }
+      end
+
+      if DeadBro.configuration.respond_to?(:enable_system_stats) && DeadBro.configuration.enable_system_stats
+        payload[:system] = safe_collect { DeadBro::Collectors::System.collect }
+      end
+      @client.post_monitor_stats(payload)
+    end
+
+    def process_hostname
+      require "socket"
+      Socket.gethostname
+    rescue
+      "unknown"
+    end
+
+    def log_error(message)
+      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+        Rails.logger.error("[DeadBro::Monitor] #{message}")
+      else
+        $stderr.puts("[DeadBro::Monitor] #{message}")
+      end
+    end
+
+    def safe_collect
+      yield
+    rescue => e
+      {error_class: e.class.name, error_message: e.message.to_s[0, 500]}
+    end
+  end
+end

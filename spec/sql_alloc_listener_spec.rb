@@ -25,10 +25,10 @@ RSpec.describe DeadBro::SqlAllocListener do
 
   describe "#start" do
     it "records the starting allocation count" do
-      allow(GC).to receive(:stat).and_return({ total_allocated_objects: 1000 })
-      
+      allow(GC).to receive(:stat).and_return({total_allocated_objects: 1000})
+
       listener.start("sql.active_record", event_id, {})
-      
+
       start_map = Thread.current[alloc_start_key]
       expect(start_map).not_to be_nil
       expect(start_map[event_id]).to eq(1000)
@@ -44,7 +44,7 @@ RSpec.describe DeadBro::SqlAllocListener do
       allow(Thread.current).to receive(:backtrace).and_return(mock_backtrace)
 
       listener.start("sql.active_record", event_id, {})
-      
+
       backtrace_map = Thread.current[backtrace_key]
       expect(backtrace_map).not_to be_nil
       # It should slice the first 5 frames
@@ -54,33 +54,33 @@ RSpec.describe DeadBro::SqlAllocListener do
 
   describe "#finish" do
     before do
-      allow(GC).to receive(:stat).and_return({ total_allocated_objects: 1050 })
+      allow(GC).to receive(:stat).and_return({total_allocated_objects: 1050})
     end
 
     it "calculates allocation delta and stores it" do
       # Setup start state
-      Thread.current[alloc_start_key] = { event_id => 1000 }
-      
+      Thread.current[alloc_start_key] = {event_id => 1000}
+
       listener.finish("sql.active_record", event_id, {})
-      
+
       results = Thread.current[alloc_results_key]
       expect(results).not_to be_nil
       expect(results[event_id]).to eq(50) # 1050 - 1000
     end
 
     it "cleans up the start entry" do
-      Thread.current[alloc_start_key] = { event_id => 1000 }
-      
+      Thread.current[alloc_start_key] = {event_id => 1000}
+
       listener.finish("sql.active_record", event_id, {})
-      
+
       expect(Thread.current[alloc_start_key]).not_to have_key(event_id)
     end
 
     it "does nothing if start data is missing" do
       Thread.current[alloc_start_key] = {}
-      
+
       listener.finish("sql.active_record", event_id, {})
-      
+
       expect(Thread.current[alloc_results_key]).to be_nil
     end
   end

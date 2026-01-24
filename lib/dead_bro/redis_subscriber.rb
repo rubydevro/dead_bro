@@ -225,17 +225,17 @@ module DeadBro
     def self.should_continue_tracking?
       events = Thread.current[THREAD_LOCAL_KEY]
       return false unless events
-      
+
       # Check count limit
       return false if events.length >= MAX_TRACKED_EVENTS
-      
+
       # Check time limit
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
       if start_time
         elapsed_seconds = Time.now - start_time
         return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
       end
-      
+
       true
     end
 

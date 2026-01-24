@@ -93,7 +93,7 @@ module DeadBro
               path: safe_path(data),
               status: data[:status],
               duration_ms: duration_ms,
-              rails_env: rails_env,
+              rails_env: DeadBro.env,
               host: safe_host,
               params: safe_params(data),
               user_agent: safe_user_agent(data),
@@ -163,14 +163,6 @@ module DeadBro
         end
       else
         ""
-      end
-    end
-
-    def self.rails_env
-      if defined?(Rails) && Rails.respond_to?(:env)
-        Rails.env
-      else
-        ENV["RACK_ENV"] || ENV["RAILS_ENV"] || "development"
       end
     end
 

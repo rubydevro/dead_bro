@@ -39,7 +39,7 @@ RSpec.describe DeadBro::SqlSubscriber do
 
   it "tracks SQL queries during request processing" do
     skip unless defined?(ActiveSupport::Notifications)
-    
+
     sql_subscriber.subscribe!
 
     # Start request tracking
@@ -80,7 +80,7 @@ RSpec.describe DeadBro::SqlSubscriber do
 
   it "tracks all queries during request processing" do
     skip unless defined?(ActiveSupport::Notifications)
-    
+
     sql_subscriber.subscribe!
     sql_subscriber.start_request_tracking
 
@@ -108,7 +108,7 @@ RSpec.describe DeadBro::SqlSubscriber do
 
   it "ignores SCHEMA queries" do
     skip unless defined?(ActiveSupport::Notifications)
-    
+
     sql_subscriber.subscribe!
     sql_subscriber.start_request_tracking
 
@@ -153,7 +153,7 @@ RSpec.describe DeadBro::SqlSubscriber do
     config = DeadBro::Configuration.new
     expect(config.slow_query_threshold_ms).to eq(500)
     expect(config.explain_analyze_enabled).to be false
-    
+
     # Test configuration
     config.slow_query_threshold_ms = 1000
     config.explain_analyze_enabled = true
@@ -165,16 +165,16 @@ RSpec.describe DeadBro::SqlSubscriber do
     DeadBro.configuration.explain_analyze_enabled = true
     # Fast query should not be explained
     expect(sql_subscriber.should_explain_query?(100, "SELECT * FROM users")).to be false
-    
+
     # Slow query should be explained
     expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users")).to be true
-    
+
     # EXPLAIN queries should not be explained
     expect(sql_subscriber.should_explain_query?(600, "EXPLAIN SELECT * FROM users")).to be false
-    
+
     # Empty queries should not be explained
     expect(sql_subscriber.should_explain_query?(600, "")).to be false
-    
+
     # Transaction queries should not be explained
     expect(sql_subscriber.should_explain_query?(600, "BEGIN")).to be false
     expect(sql_subscriber.should_explain_query?(600, "COMMIT")).to be false
@@ -205,7 +205,7 @@ RSpec.describe DeadBro::SqlSubscriber do
 
     it "handles ActiveRecord QueryAttribute objects" do
       sql = "SELECT * FROM users WHERE id = $1"
-      
+
       # Mock QueryAttribute if it doesn't exist in standard env, but usually we just need an object responding to value_for_database
       attr = double("QueryAttribute", value_for_database: 123)
       binds = [attr]
@@ -228,7 +228,7 @@ RSpec.describe DeadBro::SqlSubscriber do
         line: 10,
         method: "find_by_email"
       }
-      
+
       trace = sql_subscriber.safe_query_trace(data)
       expect(trace).to include("app/models/user.rb:10:in `find_by_email'")
     end
@@ -239,7 +239,7 @@ RSpec.describe DeadBro::SqlSubscriber do
         line: 5,
         method: "validate"
       }
-      
+
       # Should filter 'token'
       trace = sql_subscriber.safe_query_trace(data)
       expect(trace.first).to include("/[FILTERED]/")
@@ -252,7 +252,7 @@ RSpec.describe DeadBro::SqlSubscriber do
         "app/controllers/users_controller.rb:20:in `index'",
         "app/middleware/auth.rb:15:in `call'"
       ]
-      
+
       trace = sql_subscriber.safe_query_trace({}, captured_backtrace)
       # Should include app frames
       expect(trace).to include("app/controllers/users_controller.rb:20:in `index'")
@@ -270,7 +270,7 @@ RSpec.describe DeadBro::SqlSubscriber do
       it "formats ActiveRecord::Result with rows" do
         # PG returns ActiveRecord::Result
         result = double("ActiveRecord::Result", rows: [["Seq Scan on users"], ["  Filter: (id = 1)"]])
-        
+
         formatted = sql_subscriber.format_explain_result(result, connection)
         expect(formatted).to include("Seq Scan on users")
         expect(formatted).to include("Filter: (id = 1)")
@@ -282,9 +282,9 @@ RSpec.describe DeadBro::SqlSubscriber do
 
       it "formats Array of Hashes" do
         result = [
-          { "id" => 1, "select_type" => "SIMPLE", "table" => "users", "type" => "const" }
+          {"id" => 1, "select_type" => "SIMPLE", "table" => "users", "type" => "const"}
         ]
-        
+
         formatted = sql_subscriber.format_explain_result(result, connection)
         expect(formatted).to include("SIMPLE")
         expect(formatted).to include("const")
@@ -294,10 +294,10 @@ RSpec.describe DeadBro::SqlSubscriber do
         # Mock Mysql2::Result object that responds to to_a
         result = double("Mysql2::Result")
         rows = [
-          { "id" => 1, "select_type" => "SIMPLE", "table" => "users", "type" => "const" }
+          {"id" => 1, "select_type" => "SIMPLE", "table" => "users", "type" => "const"}
         ]
         allow(result).to receive(:to_a).and_return(rows)
-        
+
         formatted = sql_subscriber.format_explain_result(result, connection)
         expect(formatted).to include("SIMPLE")
         expect(formatted).to include("const")
@@ -309,9 +309,9 @@ RSpec.describe DeadBro::SqlSubscriber do
 
       it "formats Array of Hashes" do
         result = [
-          { "id" => 2, "parent" => 0, "detail" => "SCAN TABLE users" }
+          {"id" => 2, "parent" => 0, "detail" => "SCAN TABLE users"}
         ]
-        
+
         formatted = sql_subscriber.format_explain_result(result, connection)
         expect(formatted).to include("SCAN TABLE users")
       end
@@ -350,7 +350,7 @@ RSpec.describe DeadBro::SqlSubscriber do
     let(:connection) { double("Connection", adapter_name: "PostgreSQL") }
     let(:connection_pool) { double("ConnectionPool") }
     let(:active_record) { double("ActiveRecord::Base") }
-    let(:query_info) { { duration_ms: 1000 } }
+    let(:query_info) { {duration_ms: 1000} }
 
     before do
       stub_const("ActiveRecord::Base", active_record)
@@ -358,10 +358,10 @@ RSpec.describe DeadBro::SqlSubscriber do
       allow(active_record).to receive(:connection_pool).and_return(connection_pool)
       allow(connection_pool).to receive(:checkout).and_return(connection)
       allow(connection_pool).to receive(:checkin)
-      
+
       # Mock the safe interpolation
       allow(sql_subscriber).to receive(:interpolate_sql_with_binds).and_return("SELECT * FROM users WHERE id = '1'")
-      
+
       # Mock the methods used inside the thread
       allow(connection).to receive(:quote).with(1).and_return("'1'")
       allow(connection).to receive(:select_all).and_return(double("Result", rows: [["Seq Scan"]]))
@@ -370,13 +370,12 @@ RSpec.describe DeadBro::SqlSubscriber do
     it "runs EXPLAIN in a background thread and updates query_info" do
       # We need to wait for the thread to complete in the test
       allow(Thread).to receive(:new).and_yield.and_return(double("Thread"))
-      
+
       sql_subscriber.start_explain_analyze_background("SELECT * FROM users WHERE id = $1", 123, query_info, [1])
-      
+
       expect(query_info[:explain_plan]).to include("Seq Scan")
       expect(sql_subscriber).to have_received(:interpolate_sql_with_binds)
       expect(connection).to have_received(:select_all)
     end
   end
 end
-

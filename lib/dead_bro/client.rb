@@ -18,7 +18,7 @@ module DeadBro
 
       # Check sampling rate - skip if not selected for sampling
       return unless @configuration.should_sample?
-      
+
       # Check circuit breaker before making request
       if @circuit_breaker && @configuration.circuit_breaker_enabled
         if @circuit_breaker.state == :open
@@ -37,7 +37,7 @@ module DeadBro
       nil
     end
 
-    def post_job_stats(payload)
+    def post_monitor_stats(payload)
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
       return unless @configuration.job_queue_monitoring_enabled
@@ -55,7 +55,7 @@ module DeadBro
       end
 
       # Make the HTTP request (async) to jobs endpoint
-      make_job_stats_request(payload, @configuration.api_key)
+      make_monitor_request(payload, @configuration.api_key)
 
       nil
     end
@@ -122,10 +122,10 @@ module DeadBro
       nil
     end
 
-    def make_job_stats_request(payload, api_key)
+    def make_monitor_request(payload, api_key)
       use_staging = ENV["USE_STAGING_ENDPOINT"] && !ENV["USE_STAGING_ENDPOINT"].empty?
-      production_url = use_staging ? "https://deadbro.aberatii.com/apm/v1/jobs" : "https://www.deadbro.com/apm/v1/jobs"
-      endpoint_url = @configuration.ruby_dev ? "http://localhost:3100/apm/v1/jobs" : production_url
+      production_url = use_staging ? "https://deadbro.aberatii.com/apm/v1/monitor" : "https://www.deadbro.com/apm/v1/monitor"
+      endpoint_url = @configuration.ruby_dev ? "http://localhost:3100/apm/v1/monitor" : production_url
       uri = URI.parse(endpoint_url)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = (uri.scheme == "https")

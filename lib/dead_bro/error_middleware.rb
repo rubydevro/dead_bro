@@ -48,7 +48,7 @@ module DeadBro
             referer: truncate(env["HTTP_REFERER"].to_s, 500),
             host: env["HTTP_HOST"]
           },
-        rails_env: safe_rails_env,
+        rails_env: DeadBro.env,
         app: safe_app_name,
         pid: Process.pid,
         logs: DeadBro.logger.logs
@@ -85,16 +85,6 @@ module DeadBro
     def truncate(str, max)
       return str if str.nil? || str.length <= max
       str[0..(max - 1)]
-    end
-
-    def safe_rails_env
-      if defined?(Rails) && Rails.respond_to?(:env)
-        Rails.env
-      else
-        ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
-      end
-    rescue
-      "development"
     end
 
     def safe_app_name

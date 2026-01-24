@@ -10,12 +10,11 @@ end
 if defined?(Rails) && defined?(Rails::Railtie)
   module DeadBro
     class Railtie < ::Rails::Railtie
-
       initializer "dead_bro.subscribe" do |app|
         app.config.after_initialize do
           # Use the shared Client instance for all subscribers
           shared_client = DeadBro.client
-          
+
           DeadBro::Subscriber.subscribe!(client: shared_client)
           # Install outgoing HTTP instrumentation
           require "dead_bro/http_instrumentation"
@@ -58,9 +57,9 @@ if defined?(Rails) && defined?(Rails::Railtie)
 
           # Start job queue monitoring if enabled
           if DeadBro.configuration.job_queue_monitoring_enabled
-            require "dead_bro/job_queue_monitor"
-            DeadBro.job_queue_monitor = DeadBro::JobQueueMonitor.new(client: shared_client)
-            DeadBro.job_queue_monitor.start
+            require "dead_bro/monitor"
+            DeadBro.monitor = DeadBro::Monitor.new(client: shared_client)
+            DeadBro.monitor.start
           end
         rescue
           # Never raise in Railtie init
@@ -70,7 +69,7 @@ if defined?(Rails) && defined?(Rails::Railtie)
       # Insert Rack middleware early enough to observe uncaught exceptions
       initializer "dead_bro.middleware" do |app|
         require "dead_bro/error_middleware"
-        
+
         # Use the shared Client instance for the middleware
         shared_client = DeadBro.client
 

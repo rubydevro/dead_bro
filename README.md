@@ -262,6 +262,132 @@ DeadBro automatically tracks ActiveJob background jobs when ActiveJob is availab
 - `message` - Exception message (for failed jobs)
 - `backtrace` - Exception backtrace (for failed jobs)
 
+## Control Plane Metrics (Queues, DB, Process, System)
+
+DeadBro includes a lightweight **control plane metrics** job that runs periodically (by default once per minute via `DeadBro::JobQueueMonitor`) and sends a single JSON payload summarizing:
+
+- **Sidekiq / job queues**: global stats (`processed`, `failed`, `enqueued`, `scheduled_size`, `retry_size`, `dead_size`, `workers_size`, `processes_size`), and per-queue entries with `name`, `size`, and `latency_s`.
+- **Database (best effort)**: connection pool stats and a simple `ping_ms` latency when `ActiveRecord` is available and connected.
+- **Process / Rails**: `pid`, `hostname`, uptime, Ruby/Rails versions, environment, GC stats, RSS (`rss_bytes`), thread and file descriptor counts (on Linux).
+- **System (Linux best effort)**: CPU percentage over the last interval (normalised 0–100), memory used/total/available, plus filesystem and network summaries.
+
+Everything is **best effort** and designed to be **safe and low overhead**:
+
+- Collection never raises; failures are reported as `{error_class, error_message}` under the respective section key.
+- No sensitive data is sent (no job arguments, env vars, CLI args, or full SQL text in these control-plane metrics).
+- CPU and network *rates* require two samples; on the first run you may see `nil` for `cpu_pct` or network `*_bytes_per_s` fields until a second sample is available.
+
+### Configuration
+
+You can enable or disable individual collectors and tune basic options via the standard `DeadBro.configure` block:
+
+```ruby
+DeadBro.configure do |config|
+  # Enable the periodic job queue monitor (disabled by default)
+  config.job_queue_monitoring_enabled = true
+
+  # Enable best-effort collectors (all default to false)
+  config.enable_db_stats      = true   # ActiveRecord pool + ping latency
+  config.enable_process_stats = true   # pid, hostname, RSS, GC, threads, fds
+  config.enable_system_stats  = true   # CPU%, memory, disk, network
+
+  # Filesystem paths to report disk usage for (default: ["/"])
+  config.disk_paths = ["/", "/var"]
+
+  # Network interfaces to ignore when computing rx/tx stats
+  config.interfaces_ignore = %w[lo docker0]
+end
+```
+
+### Example Payload Shape
+
+The control plane job sends a single JSON payload roughly shaped like:
+
+```json
+{
+  "ts": "2025-01-01T12:00:00Z",
+  "app_name": "MyApp",
+  "env": "production",
+  "host": "app-1",
+  "pid": 12345,
+  "versions": {
+    "ruby": "3.1.2",
+    "rails": "7.1.0",
+    "sidekiq": "7.3.0"
+  },
+  "queue_system": "sidekiq",
+  "sidekiq": {
+    "processed": 1000,
+    "failed": 5,
+    "enqueued": 42,
+    "scheduled_size": 3,
+    "retry_size": 2,
+    "dead_size": 1,
+    "workers_size": 4,
+    "processes_size": 2,
+    "memory_rss_bytes": 123456789,
+    "queues": [
+      {"name": "default", "size": 10, "latency_s": 0.5}
+    ]
+  },
+  "db": {
+    "available": true,
+    "pool": {
+      "size": 5,
+      "connections": 3,
+      "busy": 1,
+      "num_waiting": 0
+    },
+    "ping_ms": 2.1
+  },
+  "process": {
+    "pid": 12345,
+    "hostname": "app-1",
+    "uptime_s": 3600.5,
+    "rss_bytes": 123456789,
+    "thread_count": 20,
+    "fd_count": 128,
+    "gc": {
+      "heap_live_slots": 123_456,
+      "heap_free_slots": 12_345,
+      "total_allocated_objects": 1_234_567,
+      "major_gc_count": 10,
+      "minor_gc_count": 50
+    }
+  },
+  "system": {
+    "cpu_pct": 12.3,
+    "mem_used_bytes": 987654321,
+    "mem_total_bytes": 2147483648,
+    "mem_available_bytes": 1153433600,
+    "disk": {
+      "paths": [
+        {
+          "path": "/",
+          "disk_total_bytes": 107374182400,
+          "disk_free_bytes": 53687091200,
+          "disk_available_bytes": 53687091200
+        }
+      ]
+    },
+    "net": {
+      "available": true,
+      "interfaces": [
+        {
+          "name": "eth0",
+          "rx_bytes": 123456,
+          "tx_bytes": 654321,
+          "rx_bytes_per_s": 1000.0,
+          "tx_bytes_per_s": 500.0
+        }
+      ]
+    }
+  }
+}
+```
+
+Not all fields will be present in all environments; unsupported or unavailable metrics may be `null` or omitted, and any hard failures are captured in `error_class` / `error_message` fields per section.
+
 
 ## Development
 

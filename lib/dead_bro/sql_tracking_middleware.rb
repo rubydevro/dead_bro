@@ -42,7 +42,7 @@ module DeadBro
 
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
-      
+
       # Set tracking start time once for all subscribers (before starting any tracking)
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
 
