@@ -124,7 +124,7 @@ module DeadBro
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],
           host: safe_host,
-          rails_env: rails_env,
+          rails_env: DeadBro.env,
           params: safe_params(data),
           user_agent: safe_user_agent(data),
           user_id: extract_user_id(data),
