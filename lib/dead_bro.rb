@@ -96,19 +96,25 @@ module DeadBro
   # - total time the block took
   # - number of SQL queries executed
   # - total SQL time
+  # - breakdown of distinct SQL query patterns (count and total time)
   # - memory before/after and delta
   # - when detailed memory tracking is enabled, GC and allocation stats
   #
-  # The return value of the block is returned unchanged from this method.
+  # The return value of this method is a hash with the following keys:
+  # - :label
+  # - :total_time_ms
+  # - :sql_count
+  # - :sql_time_ms
+  # - :sql_queries (array of distinct query patterns with counts and timings)
+  # - :memory_before_mb
+  # - :memory_after_mb
+  # - :memory_delta_mb
+  # - :memory_details (detailed GC/allocation stats when available)
   def self.analyze(label = nil)
     raise ArgumentError, "DeadBro.analyze requires a block" unless block_given?
 
     label ||= "block"
 
-    # Always prefer detailed memory tracking via MemoryTrackingSubscriber.
-    # If detailed tracking is already active for this thread (e.g. inside a
-    # request), we will NOT start/stop it again to avoid interfering – but we
-    # still use its memory_usage_mb helper for before/after numbers.
     memory_tracking_started = false
     memory_before_mb = 0.0
 
@@ -157,8 +163,30 @@ module DeadBro
               0.0
             end
 
+            raw_sql = data[:sql].to_s
+            # Normalize SQL so identical logical queries group together
+            normalized_sql = begin
+              sql = DeadBro::SqlSubscriber.sanitize_sql(raw_sql)
+              # Collapse whitespace
+              sql = sql.gsub(/\s+/, " ").strip
+              # Normalize numeric literals and quoted strings to '?'
+              sql = sql.gsub(/=\s*\d+(\.\d+)?/i, "= ?")
+              sql = sql.gsub(/=\s*'[^']*'/i, "= ?")
+              sql
+            rescue
+              raw_sql.to_s.strip
+            end
+
+            query_type = begin
+              raw_sql.strip.split.first.to_s.upcase
+            rescue
+              "SQL"
+            end
+
             local_sql_queries << {
-              duration_ms: duration_ms
+              duration_ms: duration_ms,
+              sql: normalized_sql,
+              query_type: query_type
             }
           end
       end
@@ -170,6 +198,7 @@ module DeadBro
 
     error = nil
     result = nil
+    analysis_result = nil
 
     begin
       result = yield
@@ -194,6 +223,18 @@ module DeadBro
       # Aggregate SQL metrics from our local subscription
       sql_count = local_sql_queries.length
       sql_time_ms = local_sql_queries.sum { |q| (q[:duration_ms] || 0.0).to_f }.round(2)
+
+      # Group SQL queries by normalized pattern to show frequency and cost
+      query_signatures = Hash.new { |h, k| h[k] = { count: 0, total_time_ms: 0.0, type: nil } }
+      local_sql_queries.each do |q|
+        sig = (q[:sql] || "UNKNOWN").to_s
+        entry = query_signatures[sig]
+        entry[:count] += 1
+        entry[:total_time_ms] += (q[:duration_ms] || 0.0).to_f
+        entry[:type] ||= q[:query_type]
+      end
+
+      top_query_signatures = query_signatures.sort_by { |_, data| -data[:count] }.first(3)
 
       memory_after_mb = memory_before_mb
       memory_delta_mb = 0.0
@@ -245,11 +286,23 @@ module DeadBro
         end
       end
 
+      sql_queries_segment = ""
+      unless top_query_signatures.empty?
+        formatted_queries = top_query_signatures.map do |sig, data|
+          type = data[:type] || "SQL"
+          count = data[:count]
+          total_ms = data[:total_time_ms].round(2)
+          "#{type} #{sig} (#{count}x, #{total_ms}ms)"
+        end
+        sql_queries_segment = ", sql_top_queries=[#{formatted_queries.join(" | ")}]"
+      end
+
       base_summary = "Analysis for #{label} - total_time=#{total_time_ms}ms, " \
                      "sql_queries=#{sql_count}, sql_time=#{sql_time_ms}ms, " \
                      "memory_before=#{memory_before_mb.round(2)}MB, " \
                      "memory_after=#{memory_after_mb.round(2)}MB, " \
-                     "memory_delta=#{memory_delta_mb}MB"
+                     "memory_delta=#{memory_delta_mb}MB" \
+                     "#{sql_queries_segment}"
 
       summary =
         if detailed_memory_summary
@@ -275,9 +328,31 @@ module DeadBro
         rescue
         end
       end
+
+      # Build structured result hash to return to the caller
+      sql_queries_detail = query_signatures.map do |sig, data|
+        {
+          sql: sig,
+          query_type: data[:type] || "SQL",
+          count: data[:count],
+          total_time_ms: data[:total_time_ms].round(2)
+        }
+      end
+
+      analysis_result = {
+        label: label,
+        total_time_ms: total_time_ms,
+        sql_count: sql_count,
+        sql_time_ms: sql_time_ms,
+        sql_queries: sql_queries_detail,
+        memory_before_mb: memory_before_mb,
+        memory_after_mb: memory_after_mb,
+        memory_delta_mb: memory_delta_mb,
+        memory_details: detailed_memory_summary
+      }
     end
 
     raise error if error
-    result
+    analysis_result
   end
 end
