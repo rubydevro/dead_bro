@@ -6,6 +6,7 @@ module DeadBro
   class MemoryTrackingSubscriber
     # Object allocation events
     ALLOCATION_EVENT = "object_allocations.active_support"
+    PROCESS_ACTION_EVENT = "process_action.action_controller"
 
     THREAD_LOCAL_KEY = :dead_bro_memory_events
     # Consider objects larger than this many bytes as "large"
@@ -28,6 +29,23 @@ module DeadBro
             next unless rand < ALLOCATION_SAMPLING_RATE
             track_allocation(data, started, finished)
           end
+
+          # Subscribe to process_action to capture request-level allocation counters
+          ActiveSupport::Notifications.subscribe(PROCESS_ACTION_EVENT) do |*args|
+            event = if args.length == 1 && args.first.is_a?(ActiveSupport::Notifications::Event)
+              args.first
+            else
+              ActiveSupport::Notifications::Event.new(*args)
+            end
+            allocations = event.respond_to?(:allocations) ? event.allocations : event.payload[:allocations]
+            allocated_bytes = event.respond_to?(:allocated_bytes) ? event.allocated_bytes : event.payload[:allocated_bytes]
+            next unless allocations || allocated_bytes
+
+            record_request_allocations(
+              allocations: allocations,
+              allocated_bytes: allocated_bytes
+            )
+          end
         rescue
           # Allocation tracking might not be available in all Ruby versions
         end
@@ -44,9 +62,10 @@ module DeadBro
         allocations: [],
         memory_snapshots: [],
         large_objects: [],
+        request_allocations: nil,
         gc_before: gc_stats,
         memory_before: memory_usage_mb,
-        start_time: Time.now.utc.to_i,
+        start_time: Time.now.to_f,
         object_counts_before: count_objects_snapshot
       }
     end
@@ -58,7 +77,7 @@ module DeadBro
       if events
         events[:gc_after] = gc_stats
         events[:memory_after] = memory_usage_mb
-        events[:end_time] = Time.now.utc.to_i
+        events[:end_time] = Time.now.to_f
         events[:duration_seconds] = events[:end_time] - events[:start_time]
         events[:object_counts_after] = count_objects_snapshot
 
@@ -69,6 +88,16 @@ module DeadBro
       end
 
       events || {}
+    end
+
+    # Record request-level allocation counters from Rails instrumentation.
+    def self.record_request_allocations(allocations:, allocated_bytes:)
+      return unless Thread.current[THREAD_LOCAL_KEY]
+
+      Thread.current[THREAD_LOCAL_KEY][:request_allocations] = {
+        allocations: allocations,
+        allocated_bytes: allocated_bytes
+      }
     end
 
     def self.track_allocation(data, started, finished)
@@ -122,6 +151,7 @@ module DeadBro
       allocations = memory_events[:allocations] || []
       large_objects = memory_events[:large_objects] || []
       snapshots = memory_events[:memory_snapshots] || []
+      request_allocations = memory_events[:request_allocations]
 
       # Calculate memory growth
       memory_growth = 0
@@ -132,6 +162,19 @@ module DeadBro
       # Calculate allocation totals
       total_allocations = allocations.sum { |a| a[:count] }
       total_allocated_size = allocations.sum { |a| a[:size] }
+      if request_allocations
+        total_allocated_size = request_allocations[:allocated_bytes].to_i if total_allocated_size.zero?
+      end
+      gc_allocations = nil
+      if memory_events[:gc_before] && memory_events[:gc_after]
+        gc_allocations = (memory_events[:gc_after][:total_allocated_objects] || 0) -
+          (memory_events[:gc_before][:total_allocated_objects] || 0)
+      end
+      if gc_allocations.to_i > 0
+        total_allocations = gc_allocations
+      elsif total_allocations.zero? && request_allocations
+        total_allocations = request_allocations[:allocations].to_i
+      end
 
       # Group allocations by class
       allocations_by_class = allocations.group_by { |a| a[:class_name] }
@@ -174,7 +217,8 @@ module DeadBro
           (total_allocations.to_f / memory_events[:duration_seconds]).round(2) : 0,
         top_allocating_classes: top_allocating_classes.map { |class_name, data|
           {
-            class_name: class_name,
+            class: class_name,
+            name: class_name,
             count: data[:count],
             size: data[:size],
             size_mb: (data[:size] / 1_000_000.0).round(2)
