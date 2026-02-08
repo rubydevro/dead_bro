@@ -8,19 +8,25 @@ module DeadBro
     def self.start_request_tracking
       return unless DeadBro.configuration.memory_tracking_enabled
 
-      # Only track essential metrics to minimize overhead
-      Thread.current[THREAD_LOCAL_KEY] = {
+      # Stack allows nested job tracking (e.g. one job performing others in the same thread)
+      mem_before = lightweight_memory_usage
+      frame = {
         gc_before: lightweight_gc_stats,
-        memory_before: lightweight_memory_usage,
+        memory_before: mem_before,
         start_time: Process.clock_gettime(Process::CLOCK_MONOTONIC)
       }
+      (Thread.current[THREAD_LOCAL_KEY] ||= []) << frame
     end
 
     def self.stop_request_tracking
-      events = Thread.current[THREAD_LOCAL_KEY]
-      Thread.current[THREAD_LOCAL_KEY] = nil
+      stack = Thread.current[THREAD_LOCAL_KEY]
+      unless stack.is_a?(Array) && stack.any?
+        Thread.current[THREAD_LOCAL_KEY] = nil
+        return {}
+      end
 
-      return {} unless events
+      events = stack.pop
+      Thread.current[THREAD_LOCAL_KEY] = nil if stack.empty?
 
       # Calculate only essential metrics
       gc_after = lightweight_gc_stats

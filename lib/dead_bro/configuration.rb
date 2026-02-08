@@ -7,7 +7,7 @@ module DeadBro
       :circuit_breaker_retry_timeout, :sample_rate, :excluded_controllers, :excluded_jobs,
       :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled,
       :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
-      :disk_paths, :interfaces_ignore
+      :disk_paths, :interfaces_ignore, :max_sql_queries_to_send, :max_logs_to_send
 
     def initialize
       @api_key = nil
@@ -36,6 +36,8 @@ module DeadBro
       @enable_system_stats = false
       @disk_paths = ["/"]
       @interfaces_ignore = %w[lo lo0 docker0]
+      @max_sql_queries_to_send = 500 # Cap to avoid 413 Request Entity Too Large
+      @max_logs_to_send = 100
     end
 
     def resolve_deploy_id

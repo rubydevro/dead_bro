@@ -31,6 +31,9 @@ module DeadBro
         end
       end
 
+      # Truncate large arrays to avoid 413 Request Entity Too Large
+      payload = truncate_payload_for_request(payload)
+
       # Make the HTTP request (async)
       make_http_request(event_name, payload, @configuration.api_key)
 
@@ -61,6 +64,28 @@ module DeadBro
     end
 
     private
+
+    # Limit payload size to avoid 413 from nginx/reverse proxies. Returns a new hash.
+    def truncate_payload_for_request(payload)
+      return payload unless payload.is_a?(Hash)
+
+      max_sql = @configuration.respond_to?(:max_sql_queries_to_send) ? @configuration.max_sql_queries_to_send : 500
+      max_logs = @configuration.respond_to?(:max_logs_to_send) ? @configuration.max_logs_to_send : 100
+
+      out = payload.dup
+
+      if out.key?(:sql_queries) && out[:sql_queries].is_a?(Array) && out[:sql_queries].size > max_sql
+        out[:sql_queries_total_count] = out[:sql_queries].size
+        out[:sql_queries] = out[:sql_queries].first(max_sql)
+      end
+
+      if out.key?(:logs) && out[:logs].is_a?(Array) && out[:logs].size > max_logs
+        out[:logs_total_count] = out[:logs].size
+        out[:logs] = out[:logs].first(max_logs)
+      end
+
+      out
+    end
 
     def create_circuit_breaker
       return nil unless @configuration.circuit_breaker_enabled

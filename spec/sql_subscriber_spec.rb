@@ -149,6 +149,83 @@ RSpec.describe DeadBro::SqlSubscriber do
     expect(Thread.current[:dead_bro_sql_queries]).to be_nil
   end
 
+  describe "nested job tracking (stack)" do
+    it "tracking_active? returns false when no tracking, true when stack has frames" do
+      expect(sql_subscriber.tracking_active?).to be false
+
+      sql_subscriber.start_request_tracking
+      expect(sql_subscriber.tracking_active?).to be true
+
+      sql_subscriber.stop_request_tracking
+      expect(sql_subscriber.tracking_active?).to be false
+    end
+
+    it "current_queries_array returns nil when no tracking, array when active" do
+      expect(sql_subscriber.current_queries_array).to be_nil
+
+      sql_subscriber.start_request_tracking
+      current = sql_subscriber.current_queries_array
+      expect(current).to be_a(Array)
+      expect(current).to eq(Thread.current[:dead_bro_sql_queries].last)
+
+      sql_subscriber.stop_request_tracking
+      expect(sql_subscriber.current_queries_array).to be_nil
+    end
+
+    it "isolates queries per nested level (inner stop returns inner queries, outer stop returns outer)" do
+      skip unless defined?(ActiveSupport::Notifications)
+
+      sql_subscriber.subscribe!
+
+      # Outer job starts
+      sql_subscriber.start_request_tracking
+
+      # Inner job starts (nested)
+      sql_subscriber.start_request_tracking
+
+      # One SQL during inner job
+      start1 = Time.now
+      finish1 = start1 + 0.001
+      ActiveSupport::Notifications.publish("sql.active_record", start1, finish1, SecureRandom.uuid, {
+        sql: "SELECT * FROM inner",
+        name: "Inner",
+        cached: false,
+        connection_id: 1
+      })
+      sleep(0.05)
+
+      # Inner job stops - should return only the inner query
+      inner_queries = sql_subscriber.stop_request_tracking
+      expect(inner_queries.length).to eq(1)
+      expect(inner_queries.first[:sql]).to eq("SELECT * FROM inner")
+
+      # Two SQLs during outer job
+      start2 = Time.now
+      finish2 = start2 + 0.001
+      ActiveSupport::Notifications.publish("sql.active_record", start2, finish2, SecureRandom.uuid, {
+        sql: "SELECT * FROM outer1",
+        name: "Outer1",
+        cached: false,
+        connection_id: 1
+      })
+      start3 = Time.now
+      finish3 = start3 + 0.001
+      ActiveSupport::Notifications.publish("sql.active_record", start3, finish3, SecureRandom.uuid, {
+        sql: "SELECT * FROM outer2",
+        name: "Outer2",
+        cached: false,
+        connection_id: 1
+      })
+      sleep(0.05)
+
+      # Outer job stops - should return only the outer queries
+      outer_queries = sql_subscriber.stop_request_tracking
+      expect(outer_queries.length).to eq(2)
+      expect(outer_queries.map { |q| q[:sql] }).to contain_exactly("SELECT * FROM outer1", "SELECT * FROM outer2")
+      expect(Thread.current[:dead_bro_sql_queries]).to be_nil
+    end
+  end
+
   it "has configuration for slow query threshold and explain analyze" do
     config = DeadBro::Configuration.new
     expect(config.slow_query_threshold_ms).to eq(500)

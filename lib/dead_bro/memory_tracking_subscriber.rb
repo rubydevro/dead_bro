@@ -54,11 +54,18 @@ module DeadBro
       # Never raise from instrumentation install
     end
 
+    # Current frame (top of stack) for nested job tracking; nil if none.
+    def self.current_events
+      stack = Thread.current[THREAD_LOCAL_KEY]
+      return nil unless stack.is_a?(Array) && stack.any?
+      stack.last
+    end
+
     def self.start_request_tracking
       # Only track if memory tracking is enabled
       return unless DeadBro.configuration.memory_tracking_enabled
 
-      Thread.current[THREAD_LOCAL_KEY] = {
+      frame = {
         allocations: [],
         memory_snapshots: [],
         large_objects: [],
@@ -68,11 +75,13 @@ module DeadBro
         start_time: Time.now.to_f,
         object_counts_before: count_objects_snapshot
       }
+      (Thread.current[THREAD_LOCAL_KEY] ||= []) << frame
     end
 
     def self.stop_request_tracking
-      events = Thread.current[THREAD_LOCAL_KEY]
-      Thread.current[THREAD_LOCAL_KEY] = nil
+      stack = Thread.current[THREAD_LOCAL_KEY]
+      events = stack.is_a?(Array) && stack.any? ? stack.pop : nil
+      Thread.current[THREAD_LOCAL_KEY] = nil if stack.nil? || stack.empty?
 
       if events
         events[:gc_after] = gc_stats
@@ -92,22 +101,24 @@ module DeadBro
 
     # Record request-level allocation counters from Rails instrumentation.
     def self.record_request_allocations(allocations:, allocated_bytes:)
-      return unless Thread.current[THREAD_LOCAL_KEY]
+      events = current_events
+      return unless events
 
-      Thread.current[THREAD_LOCAL_KEY][:request_allocations] = {
+      events[:request_allocations] = {
         allocations: allocations,
         allocated_bytes: allocated_bytes
       }
     end
 
     def self.track_allocation(data, started, finished)
-      return unless Thread.current[THREAD_LOCAL_KEY]
+      events = current_events
+      return unless events
 
       # Only track if we have meaningful allocation data
       return unless data.is_a?(Hash) && data[:count] && data[:size]
 
       # Limit allocations per request to prevent memory bloat
-      allocations = Thread.current[THREAD_LOCAL_KEY][:allocations]
+      allocations = events[:allocations]
       return if allocations.length >= MAX_ALLOCATIONS_PER_REQUEST
 
       # Simplified allocation tracking (avoid expensive operations)
@@ -124,14 +135,15 @@ module DeadBro
           large_object: true,
           size_mb: (data[:size] / 1_000_000.0).round(2)
         )
-        Thread.current[THREAD_LOCAL_KEY][:large_objects] << large_object
+        events[:large_objects] << large_object
       end
 
-      Thread.current[THREAD_LOCAL_KEY][:allocations] << allocation
+      events[:allocations] << allocation
     end
 
     def self.take_memory_snapshot(label = nil)
-      return unless Thread.current[THREAD_LOCAL_KEY]
+      events = current_events
+      return unless events
 
       snapshot = {
         label: label || "snapshot_#{Time.now.to_i}",
@@ -142,7 +154,7 @@ module DeadBro
         heap_pages: heap_pages
       }
 
-      Thread.current[THREAD_LOCAL_KEY][:memory_snapshots] << snapshot
+      events[:memory_snapshots] << snapshot
     end
 
     def self.analyze_memory_performance(memory_events)

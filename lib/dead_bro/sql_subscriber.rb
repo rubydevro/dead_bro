@@ -16,13 +16,25 @@ module DeadBro
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
     MAX_TRACKED_QUERIES = 1000
 
+    # True when there is at least one active tracking context (e.g. for nested jobs).
+    def self.tracking_active?
+      stack = Thread.current[THREAD_LOCAL_KEY]
+      stack.is_a?(Array) && stack.any?
+    end
+
+    # Current queries array (top of stack); nil if no active tracking.
+    def self.current_queries_array
+      stack = Thread.current[THREAD_LOCAL_KEY]
+      return nil unless stack.is_a?(Array) && stack.any?
+      stack.last
+    end
+
     # Check if we should continue tracking based on count and time limits
-    def self.should_continue_tracking?(thread_local_key, max_count)
-      events = Thread.current[thread_local_key]
-      return false unless events
+    def self.should_continue_tracking?(current_queries_array, max_count)
+      return false unless current_queries_array.is_a?(Array)
 
       # Check count limit
-      return false if events.length >= max_count
+      return false if current_queries_array.length >= max_count
 
       # Check time limit
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -44,9 +56,10 @@ module DeadBro
       end
 
       ActiveSupport::Notifications.subscribe(SQL_EVENT_NAME) do |name, started, finished, _unique_id, data|
-        next if data[:name] == "SCHEMA"
-        # Only track queries that are part of the current request
-        next unless Thread.current[THREAD_LOCAL_KEY]
+        next if data[:name] == "SCHEMA" || data[:name] == "CACHE" || data[:name] == "BEGIN" || data[:name] == "COMMIT" || data[:name] == "ROLLBACK" || data[:name] == "SAVEPOINT" || data[:name] == "RELEASE"
+        # Only track queries that are part of the current request (top of stack for nested jobs)
+        current = current_queries_array
+        next unless current
         unique_id = _unique_id
         allocations = nil
         captured_backtrace = nil
@@ -82,15 +95,16 @@ module DeadBro
           start_explain_analyze_background(original_sql, data[:connection_id], query_info, binds)
         end
 
-        # Add to thread-local storage, but only if we haven't exceeded the limits
-        if should_continue_tracking?(THREAD_LOCAL_KEY, MAX_TRACKED_QUERIES)
-          Thread.current[THREAD_LOCAL_KEY] << query_info
+        # Add to current context (top of stack), but only if we haven't exceeded the limits
+        if should_continue_tracking?(current, MAX_TRACKED_QUERIES)
+          current << query_info
         end
       end
     end
 
     def self.start_request_tracking
-      Thread.current[THREAD_LOCAL_KEY] = []
+      # Stack allows nested job tracking (e.g. one job performing others in the same thread)
+      (Thread.current[THREAD_LOCAL_KEY] ||= []) << []
       Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = {}
       Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = {}
       Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = {}
@@ -103,15 +117,17 @@ module DeadBro
       # all explain_plan fields are populated
       wait_for_pending_explains(5.0) # 5 second timeout
 
-      # Get queries after waiting for EXPLAIN to complete
-      queries = Thread.current[THREAD_LOCAL_KEY]
-
-      Thread.current[THREAD_LOCAL_KEY] = nil
-      Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = nil
-      Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = nil
-      Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = nil
-      Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
-      queries || []
+      stack = Thread.current[THREAD_LOCAL_KEY]
+      queries = stack.is_a?(Array) && stack.any? ? stack.pop : []
+      # Clear thread locals when stack is empty so "tracking not started" behaves correctly
+      if stack.nil? || stack.empty?
+        Thread.current[THREAD_LOCAL_KEY] = nil
+        Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = nil
+        Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = nil
+        Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = nil
+        Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
+      end
+      queries
     end
 
     def self.wait_for_pending_explains(timeout_seconds)

@@ -134,6 +134,12 @@ RSpec.describe DeadBro do
       expect(config.circuit_breaker_recovery_timeout).to eq(60)
       expect(config.circuit_breaker_retry_timeout).to eq(300)
     end
+
+    it "has payload truncation defaults to avoid 413" do
+      config = DeadBro::Configuration.new
+      expect(config.max_sql_queries_to_send).to eq(500)
+      expect(config.max_logs_to_send).to eq(100)
+    end
   end
 
   describe "Client" do
@@ -211,6 +217,40 @@ RSpec.describe DeadBro do
       expect(URI).to receive(:parse).with("http://localhost:3100/apm/v1/metrics")
 
       client.post_metric(event_name: "test", payload: {})
+    end
+
+    it "truncates sql_queries and logs in payload to avoid 413" do
+      config.max_sql_queries_to_send = 3
+      config.max_logs_to_send = 2
+      client = DeadBro::Client.new(config)
+
+      truncated = client.send(:truncate_payload_for_request, {
+        job_class: "TestJob",
+        sql_queries: (1..10).map { |i| {sql: "SELECT #{i}", duration_ms: 1} },
+        logs: (1..5).map { |i| {msg: "log#{i}"} }
+      })
+
+      expect(truncated[:sql_queries].size).to eq(3)
+      expect(truncated[:sql_queries_total_count]).to eq(10)
+      expect(truncated[:sql_queries].map { |q| q[:sql] }).to eq(["SELECT 1", "SELECT 2", "SELECT 3"])
+
+      expect(truncated[:logs].size).to eq(2)
+      expect(truncated[:logs_total_count]).to eq(5)
+      expect(truncated[:job_class]).to eq("TestJob")
+    end
+
+    it "does not truncate payload when under limits" do
+      config.max_sql_queries_to_send = 100
+      config.max_logs_to_send = 200
+      client = DeadBro::Client.new(config)
+
+      payload = {job_class: "TestJob", sql_queries: [{sql: "SELECT 1"}], logs: [{msg: "a"}]}
+      result = client.send(:truncate_payload_for_request, payload)
+
+      expect(result[:sql_queries].size).to eq(1)
+      expect(result).not_to have_key(:sql_queries_total_count)
+      expect(result[:logs].size).to eq(1)
+      expect(result).not_to have_key(:logs_total_count)
     end
 
     it "handles HTTP request failures" do

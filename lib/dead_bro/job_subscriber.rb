@@ -30,7 +30,7 @@ module DeadBro
 
         # Ensure tracking was started (fallback if perform_start.active_job didn't fire)
         # This handles job backends that don't emit perform_start events
-        unless Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_KEY]
+        unless DeadBro::SqlSubscriber.tracking_active?
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
@@ -103,10 +103,10 @@ module DeadBro
 
         duration_ms = ((finished - started) * 1000.0).round(2)
         exception = data[:exception_object]
+        job_class = data[:job].class.name
 
         # Ensure tracking was started (fallback if perform_start.active_job didn't fire)
-        # This handles job backends that don't emit perform_start events
-        unless Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_KEY]
+        unless DeadBro::SqlSubscriber.tracking_active?
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
