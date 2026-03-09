@@ -71,6 +71,47 @@ module DeadBro
     "development"
   end
 
+  # Returns a coarse process classification so monitoring samples can be
+  # grouped by the process that produced them.
+  def self.process_kind
+    @process_kind ||= begin
+      command = process_command_line.downcase
+      program = $PROGRAM_NAME.to_s.downcase
+      fingerprint = "#{program} #{command}"
+
+      case
+      when fingerprint.include?("sidekiq"),
+        fingerprint.include?("good_job"),
+        fingerprint.include?("solid_queue"),
+        fingerprint.include?("delayed_job")
+        "worker"
+      when fingerprint.include?("puma"),
+        fingerprint.include?("passenger"),
+        fingerprint.include?("unicorn"),
+        fingerprint.include?("falcon")
+        "web"
+      when fingerprint.include?("console")
+        "console"
+      when fingerprint.include?("rake")
+        "task"
+      else
+        "app"
+      end
+    end
+  rescue
+    "app"
+  end
+
+  def self.process_command_line
+    if File.readable?("/proc/self/cmdline")
+      File.read("/proc/self/cmdline").tr("\0", " ").strip
+    else
+      $PROGRAM_NAME.to_s
+    end
+  rescue
+    $PROGRAM_NAME.to_s
+  end
+
   # Returns the monitor instance
   def self.monitor
     @monitor

@@ -46,6 +46,7 @@ module DeadBro
         environment: DeadBro.env,
         host: process_hostname,
         pid: Process.pid,
+        process_kind: DeadBro.process_kind,
         current_time: Time.now.utc.iso8601,
         jobs: DeadBro::Collectors::Jobs.collect,
         network: DeadBro::Collectors::Network.collect
@@ -76,7 +77,7 @@ module DeadBro
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
         Rails.logger.error("[DeadBro::Monitor] #{message}")
       else
-        $stderr.puts("[DeadBro::Monitor] #{message}")
+        warn("[DeadBro::Monitor] #{message}")
       end
     end
 

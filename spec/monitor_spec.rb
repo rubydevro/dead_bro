@@ -130,6 +130,7 @@ RSpec.describe DeadBro::Monitor do
 
       allow(DeadBro::Collectors::Jobs).to receive(:collect).and_return(fake_jobs_payload)
       allow(DeadBro::Collectors::Network).to receive(:collect).and_return(fake_network_payload)
+      allow(DeadBro).to receive(:process_kind).and_return("worker")
 
       # Stub optional collectors if they are called (depending on default config)
       # Assuming default config might fail if not stubbed, or we can explicity enable them
@@ -145,6 +146,7 @@ RSpec.describe DeadBro::Monitor do
         :environment,
         :host,
         :pid,
+        :process_kind,
         :current_time,
         :jobs,
         :network,

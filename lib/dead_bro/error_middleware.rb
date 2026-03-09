@@ -51,6 +51,7 @@ module DeadBro
         rails_env: DeadBro.env,
         app: safe_app_name,
         pid: Process.pid,
+        process_kind: DeadBro.process_kind,
         logs: DeadBro.logger.logs
       }
     end

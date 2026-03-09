@@ -5,6 +5,14 @@ require "spec_helper"
 require "tempfile"
 
 RSpec.describe DeadBro::Collectors::ProcessInfo do
+  describe ".collect" do
+    it "includes the detected process kind" do
+      allow(DeadBro).to receive(:process_kind).and_return("web")
+
+      expect(described_class.collect[:kind]).to eq("web")
+    end
+  end
+
   describe ".parse_proc_status_for_rss" do
     it "parses VmRSS from a /proc/self/status-like file" do
       content = <<~STATUS
