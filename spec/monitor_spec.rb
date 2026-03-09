@@ -114,9 +114,9 @@ RSpec.describe DeadBro::Monitor do
       rails_module = Rails if rails_defined
       Object.send(:remove_const, :Rails) if rails_defined
 
-      expect($stderr).to receive(:puts).with("[DeadBro::Monitor] Test error")
-
-      monitor.send(:log_error, "Test error")
+      expect {
+        monitor.send(:log_error, "Test error")
+      }.to output("[DeadBro::Monitor] Test error\n").to_stderr
 
       # Restore Rails
       stub_const("Rails", rails_module) if rails_defined && !defined?(Rails)
