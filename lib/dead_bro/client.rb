@@ -40,6 +40,14 @@ module DeadBro
       nil
     end
 
+    def post_heartbeat
+      return if @configuration.api_key.nil?
+
+      @configuration.last_heartbeat_attempt_at = Time.now.utc
+      make_http_request("heartbeat", {}, @configuration.api_key)
+      nil
+    end
+
     def post_monitor_stats(payload)
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
@@ -65,12 +73,26 @@ module DeadBro
 
     private
 
+    def apply_settings_from_response(response)
+      return unless response.is_a?(Net::HTTPSuccess)
+
+      body = JSON.parse(response.body)
+      return unless body.is_a?(Hash) && body["settings"].is_a?(Hash)
+
+      @configuration.apply_remote_settings(body["settings"])
+
+      updated_at_str = body["settings_updated_at"]
+      @configuration.settings_received_at = updated_at_str ? Time.iso8601(updated_at_str) : Time.now.utc
+    rescue JSON::ParserError, ArgumentError
+      # Malformed response — ignore, settings stay as-is
+    end
+
     # Limit payload size to avoid 413 from nginx/reverse proxies. Returns a new hash.
     def truncate_payload_for_request(payload)
       return payload unless payload.is_a?(Hash)
 
-      max_sql = @configuration.respond_to?(:max_sql_queries_to_send) ? @configuration.max_sql_queries_to_send : 500
-      max_logs = @configuration.respond_to?(:max_logs_to_send) ? @configuration.max_logs_to_send : 100
+      max_sql = @configuration.max_sql_queries_to_send
+      max_logs = @configuration.max_logs_to_send
 
       out = payload.dup
 
@@ -110,6 +132,9 @@ module DeadBro
       request = Net::HTTP::Post.new(uri.request_uri)
       request["Content-Type"] = "application/json"
       request["Authorization"] = "Bearer #{api_key}"
+      if @configuration.settings_received_at
+        request["X-Settings-Received-At"] = @configuration.settings_received_at.utc.iso8601
+      end
       body = {event: event_name, payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id}
       request.body = JSON.dump(body)
 
@@ -125,6 +150,13 @@ module DeadBro
             else
               @circuit_breaker.send(:on_failure)
             end
+          end
+
+          # Apply remote settings if the backend included them in the response
+          apply_settings_from_response(response)
+
+          if response.is_a?(Net::HTTPSuccess) && event_name == "heartbeat"
+            @configuration.last_heartbeat_at = Time.now.utc
           end
         elsif @circuit_breaker && @configuration.circuit_breaker_enabled
           # Treat nil response as failure for circuit breaker

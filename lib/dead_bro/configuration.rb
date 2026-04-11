@@ -2,42 +2,102 @@
 
 module DeadBro
   class Configuration
-    attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev, :memory_tracking_enabled,
-      :allocation_tracking_enabled, :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
-      :circuit_breaker_retry_timeout, :sample_rate, :excluded_controllers, :excluded_jobs,
-      :exclusive_controllers, :exclusive_jobs, :deploy_id, :slow_query_threshold_ms, :explain_analyze_enabled,
+    # Local-only settings (not overwritten by API `settings` payloads).
+    # Note: `enabled` may still be updated remotely via apply_remote_settings when the backend
+    # returns it in a response; local configure() values apply until the next remote update.
+    attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev,
+      :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
+      :circuit_breaker_retry_timeout, :deploy_id, :disk_paths, :interfaces_ignore
+
+    # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
+    attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled,
+      :sample_rate, :excluded_controllers, :excluded_jobs,
+      :exclusive_controllers, :exclusive_jobs, :slow_query_threshold_ms, :explain_analyze_enabled,
       :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
-      :disk_paths, :interfaces_ignore, :max_sql_queries_to_send, :max_logs_to_send
+      :max_sql_queries_to_send, :max_logs_to_send
+
+    # Tracks when we last received settings from the backend (in-memory only)
+    attr_accessor :settings_received_at
+
+    # Last successful heartbeat HTTP response time while disabled (in-memory only)
+    attr_accessor :last_heartbeat_at
+
+    # Throttles heartbeat attempts to HEARTBEAT_INTERVAL (set when a heartbeat request is started)
+    attr_accessor :last_heartbeat_attempt_at
+
+    HEARTBEAT_INTERVAL = 60 # seconds
+
+    REMOTE_SETTING_KEYS = %w[
+      enabled sample_rate memory_tracking_enabled allocation_tracking_enabled
+      explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
+      excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
+      job_queue_monitoring_enabled enable_db_stats enable_process_stats enable_system_stats
+    ].freeze
 
     def initialize
       @api_key = nil
-      @endpoint_url = nil
       @open_timeout = 1.0
       @read_timeout = 1.0
       @enabled = true
       @ruby_dev = false
-      @memory_tracking_enabled = true
-      @allocation_tracking_enabled = false # Disabled by default for performance
       @circuit_breaker_enabled = true
       @circuit_breaker_failure_threshold = 3
-      @circuit_breaker_recovery_timeout = 60 # seconds
-      @circuit_breaker_retry_timeout = 300 # seconds
+      @circuit_breaker_recovery_timeout = 60
+      @circuit_breaker_retry_timeout = 300
+      @deploy_id = resolve_deploy_id
+      @disk_paths = ["/"]
+      @interfaces_ignore = %w[lo lo0 docker0]
+
+      # Remote-managed defaults (used until backend sends real values)
       @sample_rate = 100
+      @memory_tracking_enabled = true
+      @allocation_tracking_enabled = false
+      @explain_analyze_enabled = false
+      @slow_query_threshold_ms = 500
+      @max_sql_queries_to_send = 500
+      @max_logs_to_send = 100
       @excluded_controllers = []
       @excluded_jobs = []
       @exclusive_controllers = []
       @exclusive_jobs = []
-      @deploy_id = resolve_deploy_id
-      @slow_query_threshold_ms = 500 # Default: 500ms
-      @explain_analyze_enabled = false # Enable EXPLAIN ANALYZE for slow queries by default
-      @job_queue_monitoring_enabled = false # Disabled by default
+      @job_queue_monitoring_enabled = false
       @enable_db_stats = false
       @enable_process_stats = false
       @enable_system_stats = false
-      @disk_paths = ["/"]
-      @interfaces_ignore = %w[lo lo0 docker0]
-      @max_sql_queries_to_send = 500 # Cap to avoid 413 Request Entity Too Large
-      @max_logs_to_send = 100
+
+      @settings_received_at = nil
+      @last_heartbeat_at = nil
+      @last_heartbeat_attempt_at = nil
+      @settings_mutex = Mutex.new
+    end
+
+    # Apply a settings hash received from the backend response.
+    # Only known keys are applied; unknown keys are silently ignored.
+    # Serialized so concurrent HTTP threads do not interleave writes with request-thread reads.
+    def apply_remote_settings(hash)
+      return unless hash.is_a?(Hash)
+
+      @settings_mutex.synchronize do
+        hash.each do |key, value|
+          k = key.to_s
+          next unless REMOTE_SETTING_KEYS.include?(k)
+
+          case k
+          when "sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
+            send(:"#{k}=", value.to_i)
+          when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
+               "job_queue_monitoring_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
+            send(:"#{k}=", !!value)
+          when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
+            send(:"#{k}=", Array(value).map(&:to_s))
+          end
+        end
+      end
+    end
+
+    def heartbeat_due?
+      return false if api_key.nil?
+      last_heartbeat_attempt_at.nil? || (Time.now.utc - last_heartbeat_attempt_at) >= HEARTBEAT_INTERVAL
     end
 
     def resolve_deploy_id
@@ -88,6 +148,8 @@ module DeadBro
 
     def should_sample?
       sample_rate = resolve_sample_rate
+      sample_rate = 100 if sample_rate.nil?
+
       return true if sample_rate >= 100
       return false if sample_rate <= 0
 
@@ -95,39 +157,15 @@ module DeadBro
       rand(1..100) <= sample_rate
     end
 
+    # Returns the configured sample_rate only (no ENV fallback). Use DeadBro.configure or remote settings.
     def resolve_sample_rate
-      return @sample_rate unless @sample_rate.nil?
-
-      if ENV["dead_bro_SAMPLE_RATE"]
-        env_value = ENV["dead_bro_SAMPLE_RATE"].to_s.strip
-        # Validate that it's a valid integer string
-        if env_value.match?(/^\d+$/)
-          parsed = env_value.to_i
-          # Ensure it's in valid range (0-100)
-          (parsed >= 0 && parsed <= 100) ? parsed : 100
-        else
-          100 # Invalid format, fall back to default
-        end
-      else
-        100 # default
-      end
+      @sample_rate
     end
 
     def resolve_api_key
       return @api_key unless @api_key.nil?
 
       ENV["DEAD_BRO_API_KEY"]
-    end
-
-    def sample_rate=(value)
-      # Allow nil to use default/resolved value
-      return @sample_rate = nil if value.nil?
-
-      # Allow 0 to disable sampling, or 1-100 for percentage
-      unless value.is_a?(Integer) && value >= 0 && value <= 100
-        raise ArgumentError, "Sample rate must be an integer between 0 and 100, got: #{value.inspect}"
-      end
-      @sample_rate = value
     end
 
     private

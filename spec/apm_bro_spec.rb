@@ -31,25 +31,17 @@ RSpec.describe DeadBro do
       expect(config.sample_rate).to eq(100)
     end
 
-    it "validates sample rate range" do
+    it "accepts any sample rate value (no validation)" do
       config = DeadBro::Configuration.new
 
-      # Valid values
       config.sample_rate = 0
       expect(config.sample_rate).to eq(0)
-
-      config.sample_rate = 1
-      expect(config.sample_rate).to eq(1)
 
       config.sample_rate = 50
       expect(config.sample_rate).to eq(50)
 
       config.sample_rate = 100
       expect(config.sample_rate).to eq(100)
-
-      # Invalid values
-      expect { config.sample_rate = 101 }.to raise_error(ArgumentError, /Sample rate must be an integer between 0 and 100/)
-      expect { config.sample_rate = "50" }.to raise_error(ArgumentError, /Sample rate must be an integer between 0 and 100/)
     end
 
     it "determines sampling correctly" do
@@ -70,28 +62,22 @@ RSpec.describe DeadBro do
       expect(results).to include(false)
     end
 
-    it "resolves sample rate from environment variables" do
+    it "resolve_sample_rate returns the configured sample_rate directly" do
       config = DeadBro::Configuration.new
-      config.sample_rate = nil # Clear explicit setting
-
-      # Test with environment variable
-      ENV["dead_bro_SAMPLE_RATE"] = "25"
-      expect(config.resolve_sample_rate).to eq(25)
-
-      # Test with invalid environment variable
-      ENV["dead_bro_SAMPLE_RATE"] = "invalid"
-      expect(config.resolve_sample_rate).to eq(100) # Should fall back to default
-
-      # Clean up
-      ENV.delete("dead_bro_SAMPLE_RATE")
+      config.sample_rate = 42
+      expect(config.resolve_sample_rate).to eq(42)
     end
 
-    it "falls back to default when no sample rate is configured" do
+    it "resolve_sample_rate returns nil when sample_rate is cleared" do
       config = DeadBro::Configuration.new
       config.sample_rate = nil
+      expect(config.resolve_sample_rate).to be_nil
+    end
 
-      # Should return default of 100
-      expect(config.resolve_sample_rate).to eq(100)
+    it "treats nil sample_rate as 100% for should_sample?" do
+      config = DeadBro::Configuration.new
+      config.sample_rate = nil
+      expect(config.should_sample?).to be true
     end
 
     it "resolves api_key from ENV" do
@@ -265,6 +251,106 @@ RSpec.describe DeadBro do
 
       # Should not raise error
       expect { client.post_metric(event_name: "test", payload: {}) }.not_to raise_error
+    end
+
+    it "sends X-Settings-Received-At when settings were previously received" do
+      config.settings_received_at = Time.utc(2025, 6, 1, 10, 30, 45)
+      captured_request = nil
+      http_double = double("Net::HTTP")
+      uri_double = double("URI", host: "example.com", port: 443, scheme: "https", request_uri: "/apm/v1/metrics")
+      allow(URI).to receive(:parse).and_return(uri_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(http_double).to receive(:use_ssl=)
+      allow(http_double).to receive(:open_timeout=)
+      allow(http_double).to receive(:read_timeout=)
+
+      success = double("Response", body: "{}")
+      allow(success).to receive(:is_a?) { |klass| klass == Net::HTTPSuccess }
+      allow(http_double).to receive(:request) do |req|
+        captured_request = req
+        success
+      end
+
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, join: nil)
+      end
+
+      client.post_metric(event_name: "test", payload: {})
+
+      expect(captured_request["X-Settings-Received-At"]).to eq("2025-06-01T10:30:45Z")
+    end
+
+    it "applies remote settings from a successful JSON response body" do
+      http_double = double("Net::HTTP")
+      uri_double = double("URI", host: "example.com", port: 443, scheme: "https", request_uri: "/apm/v1/metrics")
+      allow(URI).to receive(:parse).and_return(uri_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(http_double).to receive(:use_ssl=)
+      allow(http_double).to receive(:open_timeout=)
+      allow(http_double).to receive(:read_timeout=)
+      body = '{"settings":{"enabled":false,"sample_rate":10},"settings_updated_at":"2025-06-02T00:00:00Z"}'
+      success = double("Response", body: body)
+      allow(success).to receive(:is_a?) { |klass| klass == Net::HTTPSuccess }
+      allow(http_double).to receive(:request).and_return(success)
+
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, join: nil)
+      end
+
+      client.post_metric(event_name: "test", payload: {})
+
+      expect(config.enabled).to be false
+      expect(config.sample_rate).to eq(10)
+      expect(config.settings_received_at).to eq(Time.iso8601("2025-06-02T00:00:00Z"))
+    end
+
+    it "records last_heartbeat_at only after a successful heartbeat response" do
+      config.enabled = false
+      http_double = double("Net::HTTP")
+      uri_double = double("URI", host: "example.com", port: 443, scheme: "https", request_uri: "/apm/v1/metrics")
+      allow(URI).to receive(:parse).and_return(uri_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(http_double).to receive(:use_ssl=)
+      allow(http_double).to receive(:open_timeout=)
+      allow(http_double).to receive(:read_timeout=)
+
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, join: nil)
+      end
+
+      success = double("Response", body: "{}")
+      allow(success).to receive(:is_a?) { |klass| klass == Net::HTTPSuccess }
+      allow(http_double).to receive(:request).and_return(success)
+
+      expect(config.last_heartbeat_at).to be_nil
+      client.post_heartbeat
+      expect(config.last_heartbeat_at).to be_a(Time)
+    end
+
+    it "does not set last_heartbeat_at when the heartbeat response is not successful" do
+      http_double = double("Net::HTTP")
+      uri_double = double("URI", host: "example.com", port: 443, scheme: "https", request_uri: "/apm/v1/metrics")
+      allow(URI).to receive(:parse).and_return(uri_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(http_double).to receive(:use_ssl=)
+      allow(http_double).to receive(:open_timeout=)
+      allow(http_double).to receive(:read_timeout=)
+
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, join: nil)
+      end
+
+      failure = Net::HTTPInternalServerError.new("1.1", "500", "Error")
+      failure.instance_variable_set(:@read, true)
+      failure.instance_variable_set(:@body, "{}")
+      allow(http_double).to receive(:request).and_return(failure)
+
+      client.post_heartbeat
+      expect(config.last_heartbeat_at).to be_nil
     end
   end
 
@@ -522,6 +608,114 @@ RSpec.describe DeadBro do
 
       circuit_breaker.send(:on_success)
       expect(circuit_breaker.last_success_time).to be_a(Time)
+    end
+  end
+
+  describe "Configuration#apply_remote_settings" do
+    let(:config) { DeadBro::Configuration.new }
+
+    it "applies known remote setting keys" do
+      config.apply_remote_settings(
+        "enabled" => false,
+        "sample_rate" => 50,
+        "excluded_controllers" => ["HealthController"],
+        "slow_query_threshold_ms" => 250
+      )
+
+      expect(config.enabled).to be false
+      expect(config.sample_rate).to eq(50)
+      expect(config.excluded_controllers).to eq(["HealthController"])
+      expect(config.slow_query_threshold_ms).to eq(250)
+    end
+
+    it "casts boolean values correctly" do
+      config.apply_remote_settings("enabled" => true)
+      expect(config.enabled).to be true
+
+      config.apply_remote_settings("enabled" => false)
+      expect(config.enabled).to be false
+    end
+
+    it "casts integer values" do
+      config.apply_remote_settings("sample_rate" => "75", "max_sql_queries_to_send" => "200")
+      expect(config.sample_rate).to eq(75)
+      expect(config.max_sql_queries_to_send).to eq(200)
+    end
+
+    it "casts array values and stringifies elements" do
+      config.apply_remote_settings("excluded_controllers" => [:FooController, "BarController"])
+      expect(config.excluded_controllers).to eq(["FooController", "BarController"])
+    end
+
+    it "ignores unknown keys" do
+      expect { config.apply_remote_settings("unknown_key" => "value") }.not_to raise_error
+      expect(config.enabled).to be true # unchanged
+    end
+
+    it "does nothing when given nil" do
+      expect { config.apply_remote_settings(nil) }.not_to raise_error
+    end
+
+    it "does nothing when given a non-hash" do
+      expect { config.apply_remote_settings("not a hash") }.not_to raise_error
+    end
+
+    it "applies all REMOTE_SETTING_KEYS without error" do
+      full_settings = {
+        "enabled" => true,
+        "sample_rate" => 80,
+        "memory_tracking_enabled" => false,
+        "allocation_tracking_enabled" => true,
+        "explain_analyze_enabled" => true,
+        "slow_query_threshold_ms" => 300,
+        "max_sql_queries_to_send" => 100,
+        "max_logs_to_send" => 50,
+        "excluded_controllers" => ["AdminController"],
+        "excluded_jobs" => ["SlowJob"],
+        "exclusive_controllers" => [],
+        "exclusive_jobs" => [],
+        "job_queue_monitoring_enabled" => true,
+        "enable_db_stats" => true,
+        "enable_process_stats" => false,
+        "enable_system_stats" => false
+      }
+
+      expect { config.apply_remote_settings(full_settings) }.not_to raise_error
+      expect(config.sample_rate).to eq(80)
+      expect(config.excluded_controllers).to eq(["AdminController"])
+    end
+  end
+
+  describe "Configuration#heartbeat_due?" do
+    let(:config) { DeadBro::Configuration.new }
+
+    it "returns false when api_key is nil" do
+      config.api_key = nil
+      expect(config.heartbeat_due?).to be false
+    end
+
+    it "returns true when last_heartbeat_attempt_at is nil and api_key is set" do
+      config.api_key = "some-key"
+      config.last_heartbeat_attempt_at = nil
+      expect(config.heartbeat_due?).to be true
+    end
+
+    it "returns false when last heartbeat attempt was recent" do
+      config.api_key = "some-key"
+      config.last_heartbeat_attempt_at = Time.now.utc - (DeadBro::Configuration::HEARTBEAT_INTERVAL - 10)
+      expect(config.heartbeat_due?).to be false
+    end
+
+    it "returns true when last heartbeat attempt was older than the interval" do
+      config.api_key = "some-key"
+      config.last_heartbeat_attempt_at = Time.now.utc - (DeadBro::Configuration::HEARTBEAT_INTERVAL + 1)
+      expect(config.heartbeat_due?).to be true
+    end
+
+    it "returns true exactly at the interval boundary" do
+      config.api_key = "some-key"
+      config.last_heartbeat_attempt_at = Time.now.utc - DeadBro::Configuration::HEARTBEAT_INTERVAL
+      expect(config.heartbeat_due?).to be true
     end
   end
 

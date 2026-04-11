@@ -8,21 +8,23 @@ module DeadBro
 
     def self.subscribe!(client: Client.new)
       ActiveSupport::Notifications.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
+        # When disabled remotely, fire a heartbeat at most once per minute so the gem
+        # can detect when tracking has been re-enabled, then skip all tracking.
+        unless DeadBro.configuration.enabled
+          client.post_heartbeat if DeadBro.configuration.heartbeat_due?
+          next
+        end
+
         # Skip excluded controllers or controller#action pairs
         # Also check exclusive_controller_actions - if defined, only track those
+        notification = data.is_a?(Hash) ? data : {}
+        controller_name = notification[:controller].to_s
+        action_name = notification[:action].to_s
         begin
-          controller_name = data[:controller].to_s
-          action_name = data[:action].to_s
-          if DeadBro.configuration.excluded_controller?(controller_name, action_name)
-            puts "excluded controller"
-            next
-          end
-          # If exclusive_controller_actions is defined and not empty, only track matching actions
-          unless DeadBro.configuration.exclusive_controller?(controller_name, action_name)
-            puts "exclusive controller"
-            next
-          end
-        rescue
+          next if DeadBro.configuration.excluded_controller?(controller_name, action_name)
+          next unless DeadBro.configuration.exclusive_controller?(controller_name, action_name)
+        rescue StandardError
+          next
         end
 
         duration_ms = ((finished - started) * 1000.0).round(2)
