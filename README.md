@@ -1,8 +1,10 @@
 # DeadBro (Beta Version)
 
-Minimal APM for Rails apps. Automatically measures each controller action's total time, tracks SQL queries, monitors view rendering performance, tracks memory usage and detects leaks, monitors background jobs, and posts metrics to a remote endpoint with an API key read from your app's settings/credentials/env.
+Minimal APM for Rails apps. Automatically measures each controller action's total time, tracks SQL queries, monitors view rendering performance, tracks memory usage and detects leaks, monitors background jobs, and posts metrics to DeadBro.
 
-To use the gem you need to have a free account with [DeadBro - Rails APM](https://www.deadbro.com)
+**Current versions:** almost everything (sampling, exclusions, SQL EXPLAIN, memory toggles, control-plane collectors, enable/disable, and more) is configured in the [DeadBro](https://www.deadbro.com) web app. The API returns those settings on successful requests and the gem applies them in memory—no need to mirror them in Ruby unless you want optional code-based overrides.
+
+To use the gem you need a free account with [DeadBro - Rails APM](https://www.deadbro.com).
 
 ## Installation
 
@@ -16,21 +18,33 @@ gem "dead_bro", git: "https://github.com/rubydevro/dead_bro.git"
 
 By default, if Rails is present, DeadBro auto-subscribes to `process_action.action_controller` and posts metrics asynchronously.
 
-### Configuration settings
+### Required: API key in your app
 
-You can set via an initializer:
-
+Add an initializer (for example `config/initializers/dead_bro.rb`) and set your API key from the environment, [Rails credentials](https://guides.rubyonrails.org/security.html#custom-credentials), or another secret store:
 
 ```ruby
 DeadBro.configure do |config|
   config.api_key = ENV["DEAD_BRO_API_KEY"]
-  config.enabled = true
 end
 ```
 
+That is enough to start shipping metrics. Create or copy the key from your DeadBro account, then wire it into `DEAD_BRO_API_KEY` (or assign `config.api_key` directly).
+
+### Dashboard configuration
+
+Use the DeadBro UI to turn features on or off, set sample rates, define controller/job inclusions and exclusions, tune slow-query EXPLAIN, enable queue and system metrics, and adjust related limits. After you deploy the initializer above, those choices take effect when the gem receives them from the API (typically on the next successful metric or heartbeat response).
+
+### Optional local flags
+
+You can still set `config.enabled` in Ruby if you need to force the integration off in a given environment before any remote settings arrive; otherwise the dashboard can control `enabled` like other remote settings.
+
+## Optional: configuration in Ruby
+
+The sections below describe the same knobs you can manage in the DeadBro app. Use them only when you want values in source control, per-environment initializer logic, or other overrides outside the UI.
+
 ## Request Sampling
 
-DeadBro supports configurable request sampling to reduce the volume of metrics sent to your APM endpoint, which is useful for high-traffic applications.
+DeadBro supports configurable request sampling to reduce the volume of metrics sent to your APM endpoint, which is useful for high-traffic applications. Prefer setting this in the DeadBro app; use Ruby if you need a local override.
 
 ### Configuration
 
@@ -70,22 +84,20 @@ end
 
 ## Excluding Controllers and Jobs
 
-You can exclude specific controllers and jobs from APM tracking.
+You can exclude specific controllers and jobs from APM tracking (dashboard first; Ruby optional).
 
 ### Configuration
 
 
 ```ruby
 DeadBro.configure do |config|
+  # Controller-only or controller#action patterns in one list (wildcards supported)
   config.excluded_controllers = [
     "HealthChecksController",
-    "Admin::*" # wildcard supported
-  ]
-
-  config.excluded_controller_actions = [
+    "Admin::*",
     "UsersController#show",
     "Admin::ReportsController#index",
-    "Admin::*#*" # wildcard supported for controller and action
+    "Admin::*#*"
   ]
 
   config.excluded_jobs = [
@@ -96,39 +108,38 @@ end
 ```
 
 Notes:
-- Wildcards `*` are supported for controller and action (e.g., `Admin::*#*`).
-- Matching is done against full names like `UsersController`, `Admin::ReportsController#index`, `MyJob`.
+- Wildcards `*` are supported (e.g., `Admin::*`, `Admin::*#*`).
+- Matching uses full names like `UsersController`, `Admin::ReportsController#index`, `MyJob`.
 
 ## Exclusive Tracking (Whitelist Mode)
 
-You can configure DeadBro to **only** track specific controllers, actions, or jobs. This is useful when you want to focus monitoring on a subset of your application.
+You can configure DeadBro to **only** track specific controllers, actions, or jobs. Prefer the dashboard; use Ruby for overrides.
 
 ### Configuration
 
 ```ruby
 DeadBro.configure do |config|
-  # Only track these specific controller actions
-  config.exclusive_controller_actions = [
+  # Only track these controllers/actions (patterns can include #action or wildcards)
+  config.exclusive_controllers = [
     "UsersController#show",
     "UsersController#index",
-    "Admin::ReportsController#*", # all actions in this controller
-    "Api::*#*" # all actions in all Api controllers
+    "Admin::ReportsController#*",
+    "Api::*#*"
   ]
 
-  # Only track these specific jobs
   config.exclusive_jobs = [
     "PaymentProcessingJob",
     "EmailDeliveryJob",
-    "Admin::*" # all jobs in Admin namespace
+    "Admin::*"
   ]
 end
 ```
 
 ### How It Works
 
-- **If `exclusive_controller_actions` or `exclusive_jobs` is empty/not defined**: All controllers/actions/jobs are tracked (default behavior)
-- **If `exclusive_controller_actions` or `exclusive_jobs` is defined with values**: Only matching controllers/actions/jobs are tracked
-- **Exclusion takes precedence**: If something is in both `excluded_*` and `exclusive_*`, it will be excluded (exclusion is checked first)
+- **If `exclusive_controllers` or `exclusive_jobs` is empty/not defined**: All controllers/actions/jobs are tracked (default behavior)
+- **If `exclusive_controllers` or `exclusive_jobs` is defined with values**: Only matching controllers/actions/jobs are tracked
+- **Exclusion takes precedence**: If something matches both `excluded_*` and `exclusive_*`, it is excluded (exclusion is checked first)
 
 ### Use Cases
 
@@ -136,18 +147,6 @@ end
 - **Cost Optimization**: Track only specific high-value operations
 - **Debugging**: Temporarily focus on specific controllers/jobs during investigation
 - **Compliance**: Track only operations that require monitoring for compliance reasons
-
-### Environment Variables
-
-You can also configure exclusive tracking via environment variables:
-
-```bash
-# Comma-separated list of controller#action patterns
-dead_bro_EXCLUSIVE_CONTROLLER_ACTIONS="UsersController#show,Admin::*#*"
-
-# Comma-separated list of job patterns
-dead_bro_EXCLUSIVE_JOBS="PaymentProcessingJob,EmailDeliveryJob"
-```
 
 ## SQL Query Tracking
 
@@ -173,6 +172,8 @@ DeadBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you 
 
 ### Configuration
 
+These options are usually set in the DeadBro UI. In Ruby:
+
 - **`explain_analyze_enabled`** (default: `false`) - Set to `true` to enable automatic EXPLAIN ANALYZE
 - **`slow_query_threshold_ms`** (default: `500`) - Queries taking longer than this threshold will have their execution plan captured
 
@@ -180,13 +181,10 @@ DeadBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you 
 
 ```ruby
 DeadBro.configure do |config|
-  config.api_key = ENV['DEAD_BRO_API_KEY']
-  config.enabled = true
-  
   # Enable EXPLAIN ANALYZE for queries slower than 500ms
   config.explain_analyze_enabled = true
   config.slow_query_threshold_ms = 500
-  
+
   # Or use a higher threshold for production
   # config.slow_query_threshold_ms = 1000  # Only explain queries > 1 second
 end
@@ -232,8 +230,9 @@ By default, DeadBro uses **lightweight memory tracking** that has minimal perfor
 
 ### Configuration Options
 
+Usually managed in the dashboard; Ruby example:
+
 ```ruby
-# In your Rails configuration
 DeadBro.configure do |config|
   config.memory_tracking_enabled = true        # Enable lightweight memory tracking (default: true)
   config.allocation_tracking_enabled = false   # Enable detailed allocation tracking (default: false)
@@ -279,7 +278,7 @@ Everything is **best effort** and designed to be **safe and low overhead**:
 
 ### Configuration
 
-You can enable or disable individual collectors and tune basic options via the standard `DeadBro.configure` block:
+Enable or disable collectors in the DeadBro app, or use `DeadBro.configure` for code-based overrides:
 
 ```ruby
 DeadBro.configure do |config|
