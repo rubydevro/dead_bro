@@ -80,7 +80,7 @@ module DeadBro
 
     def self.stop_request_tracking
       stack = Thread.current[THREAD_LOCAL_KEY]
-      events = stack.is_a?(Array) && stack.any? ? stack.pop : nil
+      events = (stack.is_a?(Array) && stack.any?) ? stack.pop : nil
       Thread.current[THREAD_LOCAL_KEY] = nil if stack.nil? || stack.empty?
 
       if events
@@ -191,10 +191,10 @@ module DeadBro
       # Group allocations by class
       allocations_by_class = allocations.group_by { |a| a[:class_name] }
         .transform_values { |allocs|
-        {
-          count: allocs.sum { |a| a[:count] },
-          size: allocs.sum { |a| a[:size] }
-        }
+          {
+            count: allocs.sum { |a| a[:count] },
+            size: allocs.sum { |a| a[:size] }
+          }
       }
 
       # Find top allocating classes

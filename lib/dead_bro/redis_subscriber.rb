@@ -25,8 +25,8 @@ module DeadBro
     def self.install_redis_client!
       # Only instrument if Redis::Client actually has the call method
       # Check both public and private methods
-      has_call = ::Redis::Client.instance_methods(false).include?(:call) ||
-        ::Redis::Client.private_instance_methods(false).include?(:call)
+      has_call = ::Redis::Client.method_defined?(:call, false) ||
+        ::Redis::Client.private_method_defined?(:call, false)
       return unless has_call
 
       mod = Module.new do
