@@ -61,6 +61,8 @@ if defined?(Rails) && defined?(Rails::Railtie)
             DeadBro.monitor = DeadBro::Monitor.new(client: shared_client)
             DeadBro.monitor.start
           end
+
+          DeadBro::InventoryHeartbeat.start
         rescue
           # Never raise in Railtie init
         end

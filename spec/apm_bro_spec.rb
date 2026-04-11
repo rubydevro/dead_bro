@@ -140,6 +140,15 @@ RSpec.describe DeadBro do
       expect(config.max_sql_queries_to_send).to eq(500)
       expect(config.max_logs_to_send).to eq(100)
     end
+
+    it "has dependency inventory defaults (opt-in heartbeat)" do
+      config = DeadBro::Configuration.new
+      expect(config.dependency_inventory_enabled).to be false
+      expect(config.dependency_inventory_heartbeat_interval_seconds).to eq(86_400)
+      expect(config.inventory_app_name).to be_nil
+      expect(config.inventory_instance_id).to be_nil
+      expect(config.inventory_include_gem_groups).to be false
+    end
   end
 
   describe "Client" do
