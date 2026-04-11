@@ -23,7 +23,7 @@ module DeadBro
         begin
           next if DeadBro.configuration.excluded_controller?(controller_name, action_name)
           next unless DeadBro.configuration.exclusive_controller?(controller_name, action_name)
-        rescue StandardError
+        rescue
           next
         end
 

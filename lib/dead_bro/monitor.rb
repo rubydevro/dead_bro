@@ -76,7 +76,7 @@ module DeadBro
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
         Rails.logger.error("[DeadBro::Monitor] #{message}")
       else
-        $stderr.puts("[DeadBro::Monitor] #{message}")
+        warn("[DeadBro::Monitor] #{message}")
       end
     end
 

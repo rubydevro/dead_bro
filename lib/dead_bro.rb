@@ -120,7 +120,7 @@ module DeadBro
 
     begin
       if defined?(DeadBro::MemoryTrackingSubscriber) &&
-         !Thread.current[DeadBro::MemoryTrackingSubscriber::THREAD_LOCAL_KEY]
+          !Thread.current[DeadBro::MemoryTrackingSubscriber::THREAD_LOCAL_KEY]
         DeadBro::MemoryTrackingSubscriber.start_request_tracking
         memory_tracking_started = true
       end
@@ -128,10 +128,10 @@ module DeadBro
     end
 
     begin
-      if defined?(DeadBro::MemoryTrackingSubscriber)
-        memory_before_mb = DeadBro::MemoryTrackingSubscriber.memory_usage_mb
+      memory_before_mb = if defined?(DeadBro::MemoryTrackingSubscriber)
+        DeadBro::MemoryTrackingSubscriber.memory_usage_mb
       else
-        memory_before_mb = 0.0
+        0.0
       end
     rescue
       memory_before_mb = 0.0
@@ -148,7 +148,6 @@ module DeadBro
     begin
       if defined?(ActiveSupport) && defined?(ActiveSupport::Notifications)
         # Ensure SqlSubscriber is loaded so SQL_EVENT_NAME is defined
-        DeadBro::SqlSubscriber
         event_name = DeadBro::SqlSubscriber::SQL_EVENT_NAME
 
         sql_notification_subscription =
@@ -197,11 +196,9 @@ module DeadBro
     block_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     error = nil
-    result = nil
-    analysis_result = nil
 
     begin
-      result = yield
+      yield
     rescue => e
       error = e
     ensure
@@ -225,7 +222,7 @@ module DeadBro
       sql_time_ms = local_sql_queries.sum { |q| (q[:duration_ms] || 0.0).to_f }.round(2)
 
       # Group SQL queries by normalized pattern to show frequency and cost
-      query_signatures = Hash.new { |h, k| h[k] = { count: 0, total_time_ms: 0.0, type: nil } }
+      query_signatures = Hash.new { |h, k| h[k] = {count: 0, total_time_ms: 0.0, type: nil} }
       local_sql_queries.each do |q|
         sig = (q[:sql] || "UNKNOWN").to_s
         entry = query_signatures[sig]
@@ -237,7 +234,6 @@ module DeadBro
       top_query_signatures = query_signatures.sort_by { |_, data| -data[:count] }.first(3)
 
       memory_after_mb = memory_before_mb
-      memory_delta_mb = 0.0
       detailed_memory_summary = nil
 
       raw_events = {}
@@ -255,14 +251,12 @@ module DeadBro
           memory_before_mb = raw_events[:memory_before]
         end
 
-        if raw_events[:memory_after]
-          memory_after_mb = raw_events[:memory_after]
+        memory_after_mb = if raw_events[:memory_after]
+          raw_events[:memory_after]
+        elsif defined?(DeadBro::MemoryTrackingSubscriber)
+          DeadBro::MemoryTrackingSubscriber.memory_usage_mb
         else
-          if defined?(DeadBro::MemoryTrackingSubscriber)
-            memory_after_mb = DeadBro::MemoryTrackingSubscriber.memory_usage_mb
-          else
-            memory_after_mb = memory_before_mb
-          end
+          memory_before_mb
         end
       rescue
         memory_after_mb = memory_before_mb

@@ -118,7 +118,7 @@ module DeadBro
       wait_for_pending_explains(5.0) # 5 second timeout
 
       stack = Thread.current[THREAD_LOCAL_KEY]
-      queries = stack.is_a?(Array) && stack.any? ? stack.pop : []
+      queries = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
       # Clear thread locals when stack is empty so "tracking not started" behaves correctly
       if stack.nil? || stack.empty?
         Thread.current[THREAD_LOCAL_KEY] = nil

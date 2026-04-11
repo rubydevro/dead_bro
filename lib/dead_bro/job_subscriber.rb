@@ -103,7 +103,7 @@ module DeadBro
 
         duration_ms = ((finished - started) * 1000.0).round(2)
         exception = data[:exception_object]
-        job_class = data[:job].class.name
+        data[:job].class.name
 
         # Ensure tracking was started (fallback if perform_start.active_job didn't fire)
         unless DeadBro::SqlSubscriber.tracking_active?
