@@ -19,6 +19,8 @@ module DeadBro
   autoload :MemoryHelpers, "dead_bro/memory_helpers"
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"
+  autoload :DependencyInventory, "dead_bro/dependency_inventory"
+  autoload :InventoryHeartbeat, "dead_bro/inventory_heartbeat"
   autoload :Monitor, "dead_bro/monitor"
   autoload :Logger, "dead_bro/logger"
   begin

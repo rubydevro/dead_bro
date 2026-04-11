@@ -40,6 +40,26 @@ module DeadBro
       nil
     end
 
+    def post_dependency_inventory(payload)
+      key = inventory_api_key
+      return if key.nil? || key.to_s.empty?
+      return unless @configuration.enabled
+
+      if @circuit_breaker && @configuration.circuit_breaker_enabled
+        if @circuit_breaker.state == :open
+          if @circuit_breaker.should_attempt_reset?
+            @circuit_breaker.transition_to_half_open!
+          else
+            return
+          end
+        end
+      end
+
+      make_inventory_request(payload, key)
+
+      nil
+    end
+
     def post_monitor_stats(payload)
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
@@ -64,6 +84,13 @@ module DeadBro
     end
 
     private
+
+    def inventory_api_key
+      k = @configuration.api_key
+      return k if k && !k.to_s.empty?
+
+      @configuration.resolve_api_key
+    end
 
     # Limit payload size to avoid 413 from nginx/reverse proxies. Returns a new hash.
     def truncate_payload_for_request(payload)
@@ -189,6 +216,51 @@ module DeadBro
         end
       rescue
         # Update circuit breaker on exception
+        if @circuit_breaker && @configuration.circuit_breaker_enabled
+          @circuit_breaker.send(:on_failure)
+        end
+      end
+
+      nil
+    end
+
+    def make_inventory_request(payload, api_key)
+      use_staging = ENV["USE_STAGING_ENDPOINT"] && !ENV["USE_STAGING_ENDPOINT"].empty?
+      production_url = use_staging ? "https://deadbro.aberatii.com/apm/v1/inventory" : "https://www.deadbro.com/apm/v1/inventory"
+      endpoint_url = @configuration.ruby_dev ? "http://localhost:3100/apm/v1/inventory" : production_url
+      uri = URI.parse(endpoint_url)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == "https")
+      http.open_timeout = @configuration.open_timeout
+      http.read_timeout = @configuration.read_timeout
+
+      request = Net::HTTP::Post.new(uri.request_uri)
+      request["Content-Type"] = "application/json"
+      request["Authorization"] = "Bearer #{api_key}"
+      body = {payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id}
+      request.body = JSON.dump(body)
+
+      Thread.new do
+        response = http.request(request)
+
+        if response
+          if @circuit_breaker && @configuration.circuit_breaker_enabled
+            if response.is_a?(Net::HTTPSuccess)
+              @circuit_breaker.send(:on_success)
+            else
+              @circuit_breaker.send(:on_failure)
+            end
+          end
+        elsif @circuit_breaker && @configuration.circuit_breaker_enabled
+          @circuit_breaker.send(:on_failure)
+        end
+
+        response
+      rescue Timeout::Error
+        if @circuit_breaker && @configuration.circuit_breaker_enabled
+          @circuit_breaker.send(:on_failure)
+        end
+      rescue
         if @circuit_breaker && @configuration.circuit_breaker_enabled
           @circuit_breaker.send(:on_failure)
         end
