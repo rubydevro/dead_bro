@@ -11,10 +11,13 @@ module DeadBro
 
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled,
-      :sample_rate, :excluded_controllers, :excluded_jobs,
-      :exclusive_controllers, :exclusive_jobs, :slow_query_threshold_ms, :explain_analyze_enabled,
+      :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled,
       :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
       :max_sql_queries_to_send, :max_logs_to_send
+
+    # Readers for exclusion lists. Writers are defined below so we can compile
+    # and cache the regex form once, instead of rebuilding it per request.
+    attr_reader :excluded_controllers, :excluded_jobs, :exclusive_controllers, :exclusive_jobs
 
     # Tracks when we last received settings from the backend (in-memory only)
     attr_accessor :settings_received_at
@@ -56,10 +59,10 @@ module DeadBro
       @slow_query_threshold_ms = 500
       @max_sql_queries_to_send = 500
       @max_logs_to_send = 100
-      @excluded_controllers = []
-      @excluded_jobs = []
-      @exclusive_controllers = []
-      @exclusive_jobs = []
+      self.excluded_controllers = []
+      self.excluded_jobs = []
+      self.exclusive_controllers = []
+      self.exclusive_jobs = []
       @job_queue_monitoring_enabled = false
       @enable_db_stats = false
       @enable_process_stats = false
@@ -69,6 +72,26 @@ module DeadBro
       @last_heartbeat_at = nil
       @last_heartbeat_attempt_at = nil
       @settings_mutex = Mutex.new
+    end
+
+    def excluded_controllers=(value)
+      @excluded_controllers = Array(value).map(&:to_s)
+      @compiled_excluded_controllers = compile_patterns(@excluded_controllers)
+    end
+
+    def excluded_jobs=(value)
+      @excluded_jobs = Array(value).map(&:to_s)
+      @compiled_excluded_jobs = compile_patterns(@excluded_jobs)
+    end
+
+    def exclusive_controllers=(value)
+      @exclusive_controllers = Array(value).map(&:to_s)
+      @compiled_exclusive_controllers = compile_patterns(@exclusive_controllers)
+    end
+
+    def exclusive_jobs=(value)
+      @exclusive_jobs = Array(value).map(&:to_s)
+      @compiled_exclusive_jobs = compile_patterns(@exclusive_jobs)
     end
 
     # Apply a settings hash received from the backend response.
@@ -105,45 +128,45 @@ module DeadBro
     end
 
     def excluded_controller?(controller_name, action_name = nil)
-      return false if @excluded_controllers.empty?
+      compiled = @compiled_excluded_controllers
+      return false if compiled.nil? || compiled.empty?
 
-      # If action_name is provided, check both controller#action patterns and controller-only patterns
       if action_name
         target = "#{controller_name}##{action_name}"
-        # Check controller#action patterns (patterns containing '#')
-        action_patterns = @excluded_controllers.select { |pat| pat.to_s.include?("#") }
-        if action_patterns.any? { |pat| match_name_or_pattern?(target, pat) }
-          return true
-        end
-        # Check controller-only patterns (patterns without '#')
-        # If the controller itself is excluded, all its actions are excluded
-        controller_patterns = @excluded_controllers.reject { |pat| pat.to_s.include?("#") }
-        if controller_patterns.any? { |pat| match_name_or_pattern?(controller_name, pat) }
-          return true
+        compiled.each do |entry|
+          if entry[:has_hash]
+            return true if match_compiled?(target, entry)
+          elsif match_compiled?(controller_name, entry)
+            return true
+          end
         end
         return false
       end
 
-      # When action_name is nil, only check controller-only patterns (no #)
-      controller_patterns = @excluded_controllers.reject { |pat| pat.to_s.include?("#") }
-      return false if controller_patterns.empty?
-      controller_patterns.any? { |pat| match_name_or_pattern?(controller_name, pat) }
+      compiled.each do |entry|
+        next if entry[:has_hash]
+        return true if match_compiled?(controller_name, entry)
+      end
+      false
     end
 
     def excluded_job?(job_class_name)
-      return false if @excluded_jobs.empty?
-      @excluded_jobs.any? { |pat| match_name_or_pattern?(job_class_name, pat) }
+      compiled = @compiled_excluded_jobs
+      return false if compiled.nil? || compiled.empty?
+      compiled.any? { |entry| match_compiled?(job_class_name, entry) }
     end
 
     def exclusive_job?(job_class_name)
-      return true if @exclusive_jobs.empty? # If not defined, allow all (default behavior)
-      @exclusive_jobs.any? { |pat| match_name_or_pattern?(job_class_name, pat) }
+      compiled = @compiled_exclusive_jobs
+      return true if compiled.nil? || compiled.empty?
+      compiled.any? { |entry| match_compiled?(job_class_name, entry) }
     end
 
     def exclusive_controller?(controller_name, action_name)
-      return true if @exclusive_controllers.empty? # If not defined, allow all (default behavior)
+      compiled = @compiled_exclusive_controllers
+      return true if compiled.nil? || compiled.empty?
       target = "#{controller_name}##{action_name}"
-      @exclusive_controllers.any? { |pat| match_name_or_pattern?(target, pat) }
+      compiled.any? { |entry| match_compiled?(target, entry) }
     end
 
     def should_sample?
@@ -170,21 +193,34 @@ module DeadBro
 
     private
 
-    def match_name_or_pattern?(name, pattern)
-      return false if name.nil? || pattern.nil?
-      pat = pattern.to_s
-      return !!(name.to_s == pat) unless pat.include?("*")
-
-      # For controller action patterns (containing '#'), use .* to match any characters including colons
-      # For controller-only patterns, use [^:]* to match namespace segments
-      regex = if pat.include?("#")
-        # Controller action pattern: allow * to match any characters including colons
-        Regexp.new("^" + Regexp.escape(pat).gsub("\\*", ".*") + "$")
-      else
-        # Controller-only pattern: use [^:]* to match namespace segments
-        Regexp.new("^" + Regexp.escape(pat).gsub("\\*", "[^:]*") + "$")
+    # Turn a list of user-facing patterns into {pattern, has_hash, regex}
+    # entries. Regex is nil when the pattern is a plain literal (cheaper eq
+    # compare). Compiling up-front removes per-request regex allocation.
+    def compile_patterns(patterns)
+      Array(patterns).map do |pat|
+        s = pat.to_s
+        has_hash = s.include?("#")
+        regex = if s.include?("*")
+          if has_hash
+            Regexp.new("\\A" + Regexp.escape(s).gsub("\\*", ".*") + "\\z")
+          else
+            Regexp.new("\\A" + Regexp.escape(s).gsub("\\*", "[^:]*") + "\\z")
+          end
+        end
+        {pattern: s, has_hash: has_hash, regex: regex}
       end
-      !!(name.to_s =~ regex)
+    rescue
+      []
+    end
+
+    def match_compiled?(name, entry)
+      return false if name.nil? || entry.nil?
+      n = name.to_s
+      if entry[:regex]
+        !!(n =~ entry[:regex])
+      else
+        n == entry[:pattern]
+      end
     rescue
       false
     end

@@ -17,13 +17,24 @@ module DeadBro
         begin
           job_class_name = data[:job].class.name
           if DeadBro.configuration.excluded_job?(job_class_name)
+            drain_job_tracking
             next
           end
           # If exclusive_jobs is defined and not empty, only track matching jobs
           unless DeadBro.configuration.exclusive_job?(job_class_name)
+            drain_job_tracking
             next
           end
         rescue
+        end
+
+        # Skip out via sampling before we build any payload — jobs can be chatty
+        # enough that even the "cheap" stop/analyze work matters under load.
+        # Completions have no exception attached; the exception subscriber below
+        # always sends errors with force: true.
+        unless DeadBro.configuration.should_sample?
+          drain_job_tracking
+          next
         end
 
         duration_ms = ((finished - started) * 1000.0).round(2)
@@ -34,6 +45,11 @@ module DeadBro
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
+          if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+            DeadBro::MemoryTrackingSubscriber.start_request_tracking
+          else
+            DeadBro::LightweightMemoryTracker.start_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
+          end
         end
 
         # Get SQL queries executed during this job
@@ -110,6 +126,11 @@ module DeadBro
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
+          if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+            DeadBro::MemoryTrackingSubscriber.start_request_tracking
+          else
+            DeadBro::LightweightMemoryTracker.start_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
+          end
         end
 
         # Get SQL queries executed during this job
@@ -164,10 +185,22 @@ module DeadBro
         }
 
         event_name = exception&.class&.name || "ActiveJob::Exception"
-        client.post_metric(event_name: event_name, payload: payload, error: true)
+        client.post_metric(event_name: event_name, payload: payload, force: true)
       end
     rescue
       # Never raise from instrumentation install
+    end
+
+    # Release job-side thread-local tracking state when we've decided not to
+    # build a payload (excluded job / sampled out). Matches Subscriber.drain_request_tracking.
+    def self.drain_job_tracking
+      DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
+      DeadBro::LightweightMemoryTracker.stop_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
+      if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+        DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+      end
+    rescue
+      # Best effort
     end
 
     private
@@ -215,17 +248,7 @@ module DeadBro
     end
 
     def self.memory_usage_mb
-      if defined?(GC) && GC.respond_to?(:stat)
-        # Get memory usage in MB
-        memory_kb = begin
-          `ps -o rss= -p #{Process.pid}`.to_i
-        rescue
-          0
-        end
-        (memory_kb / 1024.0).round(2)
-      else
-        0
-      end
+      DeadBro::MemoryHelpers.rss_mb
     rescue
       0
     end

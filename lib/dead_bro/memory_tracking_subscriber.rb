@@ -4,8 +4,10 @@ require "active_support/notifications"
 
 module DeadBro
   class MemoryTrackingSubscriber
-    # Object allocation events
-    ALLOCATION_EVENT = "object_allocations.active_support"
+    # Allocation counts come from the process_action event (Rails instruments
+    # allocations there via ActiveSupport::Notifications). The old
+    # "object_allocations.active_support" constant was never emitted by Rails,
+    # so that subscription was dead code — removed.
     PROCESS_ACTION_EVENT = "process_action.action_controller"
 
     THREAD_LOCAL_KEY = :dead_bro_memory_events
@@ -13,7 +15,6 @@ module DeadBro
     LARGE_OBJECT_THRESHOLD = 1_000_000 # 1MB threshold for large objects
 
     # Performance optimization settings
-    ALLOCATION_SAMPLING_RATE = 1 # Track all when enabled (adjust in production)
     MAX_ALLOCATIONS_PER_REQUEST = 1000 # Limit allocations tracked per request
     LARGE_OBJECT_SAMPLE_RATE = 0.01 # Sample 1% of live objects to estimate large ones
     MAX_LARGE_OBJECTS = 50 # Cap number of large objects captured per request
@@ -23,13 +24,6 @@ module DeadBro
       return unless DeadBro.configuration.allocation_tracking_enabled
       if defined?(ActiveSupport::Notifications) && ActiveSupport::Notifications.notifier.respond_to?(:subscribe)
         begin
-          # Subscribe to object allocation events with sampling
-          ActiveSupport::Notifications.subscribe(ALLOCATION_EVENT) do |name, started, finished, _unique_id, data|
-            # Sample allocations to reduce overhead
-            next unless rand < ALLOCATION_SAMPLING_RATE
-            track_allocation(data, started, finished)
-          end
-
           # Subscribe to process_action to capture request-level allocation counters
           ActiveSupport::Notifications.subscribe(PROCESS_ACTION_EVENT) do |*args|
             event = if args.length == 1 && args.first.is_a?(ActiveSupport::Notifications::Event)
@@ -345,27 +339,9 @@ module DeadBro
     end
 
     def self.memory_usage_mb
-      # Use cached memory calculation to avoid expensive system calls
-      @memory_cache ||= {}
-      cache_key = Process.pid
-
-      # Cache memory usage for 1 second to avoid repeated system calls
-      if @memory_cache[cache_key] && (Time.now - @memory_cache[cache_key][:timestamp]) < 1
-        return @memory_cache[cache_key][:memory]
-      end
-
-      memory = if defined?(GC) && GC.respond_to?(:stat)
-        # Use GC stats as a proxy for memory usage (much faster than ps)
-        gc_stats = GC.stat
-        # Estimate memory usage from heap pages (rough approximation)
-        heap_pages = gc_stats[:heap_allocated_pages] || 0
-        (heap_pages * 4 * 1024) / (1024 * 1024) # 4KB per page, convert to MB
-      else
-        0
-      end
-
-      @memory_cache[cache_key] = {memory: memory, timestamp: Time.now}
-      memory
+      # MemoryHelpers.rss_mb reads /proc/self/status on Linux and caches for
+      # ~1 second across threads, so this is safe to call per-request.
+      DeadBro::MemoryHelpers.rss_mb
     rescue
       0
     end

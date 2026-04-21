@@ -43,13 +43,11 @@ module DeadBro
     end
 
     def self.lightweight_memory_usage
-      # Use only GC stats for memory estimation (no system calls)
-      return 0 unless defined?(GC) && GC.respond_to?(:stat)
-
-      gc_stats = GC.stat
-      heap_pages = gc_stats[:heap_allocated_pages] || 0
-      # Rough estimation: 4KB per page
-      (heap_pages * 4) / 1024.0 # Convert to MB
+      # Real RSS, cached for ~1s across threads so this is cheap even on hot
+      # paths. Previous versions multiplied heap_pages by 4KB and labelled the
+      # result as MB — both the unit and the page size were wrong (MRI heap
+      # pages are ~16KB and heap != RSS), so the number was effectively fiction.
+      DeadBro::MemoryHelpers.rss_mb
     rescue
       0
     end

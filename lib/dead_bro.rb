@@ -5,6 +5,7 @@ require_relative "dead_bro/version"
 module DeadBro
   autoload :Configuration, "dead_bro/configuration"
   autoload :Client, "dead_bro/client"
+  autoload :Dispatcher, "dead_bro/dispatcher"
   autoload :CircuitBreaker, "dead_bro/circuit_breaker"
   autoload :Collectors, "dead_bro/collectors"
   autoload :Subscriber, "dead_bro/subscriber"
@@ -20,6 +21,7 @@ module DeadBro
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"
   autoload :Monitor, "dead_bro/monitor"
+  autoload :MemoryDetails, "dead_bro/memory_details"
   autoload :Logger, "dead_bro/logger"
   begin
     require "dead_bro/railtie"
@@ -110,32 +112,38 @@ module DeadBro
   # - :memory_after_mb
   # - :memory_delta_mb
   # - :memory_details (detailed GC/allocation stats when available)
-  def self.analyze(label = nil)
+  def self.analyze(label = nil, verbose: false)
     raise ArgumentError, "DeadBro.analyze requires a block" unless block_given?
 
     label ||= "block"
 
-    memory_tracking_started = false
-    memory_before_mb = 0.0
-
-    begin
-      if defined?(DeadBro::MemoryTrackingSubscriber) &&
-          !Thread.current[DeadBro::MemoryTrackingSubscriber::THREAD_LOCAL_KEY]
-        DeadBro::MemoryTrackingSubscriber.start_request_tracking
-        memory_tracking_started = true
+    # Lower Rails log level to DEBUG and enable ActiveRecord verbose_query_logs
+    # so Rails' own SQL logging (including ↳ caller frames) is visible.
+    original_log_level = nil
+    original_verbose_query_logs = nil
+    if verbose
+      begin
+        if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger.respond_to?(:level)
+          original_log_level = Rails.logger.level
+          Rails.logger.level = 0 # Logger::DEBUG
+        end
+      rescue
       end
-    rescue
+      begin
+        if defined?(ActiveRecord) && ActiveRecord.respond_to?(:verbose_query_logs)
+          original_verbose_query_logs = ActiveRecord.verbose_query_logs
+          ActiveRecord.verbose_query_logs = true
+        end
+      rescue
+      end
     end
 
-    begin
-      memory_before_mb = if defined?(DeadBro::MemoryTrackingSubscriber)
-        DeadBro::MemoryTrackingSubscriber.memory_usage_mb
-      else
-        0.0
-      end
-    rescue
-      memory_before_mb = 0.0
-    end
+    # Capture baseline memory stats — config-independent, analyze is debug-only.
+    gc_before = begin; GC.stat; rescue; {}; end
+    memory_before_mb = begin; DeadBro::MemoryHelpers.rss_mb; rescue; 0.0; end
+    object_counts_before = begin
+      defined?(ObjectSpace) && ObjectSpace.respond_to?(:count_objects) ? ObjectSpace.count_objects.dup : {}
+    rescue; {}; end
 
     # Local SQL tracking just for this block.
     # We subscribe directly to ActiveSupport::Notifications instead of relying
@@ -182,11 +190,7 @@ module DeadBro
               "SQL"
             end
 
-            local_sql_queries << {
-              duration_ms: duration_ms,
-              sql: normalized_sql,
-              query_type: query_type
-            }
+            local_sql_queries << {duration_ms: duration_ms, sql: normalized_sql, query_type: query_type}
           end
       end
     rescue
@@ -202,6 +206,20 @@ module DeadBro
     rescue => e
       error = e
     ensure
+      # Restore Rails log level before any output
+      begin
+        if verbose && original_log_level
+          Rails.logger.level = original_log_level
+        end
+      rescue
+      end
+      begin
+        if verbose && !original_verbose_query_logs.nil?
+          ActiveRecord.verbose_query_logs = original_verbose_query_logs
+        end
+      rescue
+      end
+
       # Always unsubscribe our local SQL subscriber
       begin
         if sql_notification_subscription && defined?(ActiveSupport) && defined?(ActiveSupport::Notifications)
@@ -233,52 +251,41 @@ module DeadBro
 
       top_query_signatures = query_signatures.sort_by { |_, data| -data[:count] }.first(3)
 
-      memory_after_mb = memory_before_mb
-      detailed_memory_summary = nil
-
-      raw_events = {}
-      if memory_tracking_started
-        begin
-          raw_events = DeadBro::MemoryTrackingSubscriber.stop_request_tracking || {}
-        rescue
-          raw_events = {}
-        end
-      end
-
-      begin
-        # Prefer values from detailed tracking when available
-        if raw_events[:memory_before]
-          memory_before_mb = raw_events[:memory_before]
-        end
-
-        memory_after_mb = if raw_events[:memory_after]
-          raw_events[:memory_after]
-        elsif defined?(DeadBro::MemoryTrackingSubscriber)
-          DeadBro::MemoryTrackingSubscriber.memory_usage_mb
-        else
-          memory_before_mb
-        end
-      rescue
-        memory_after_mb = memory_before_mb
-      end
+      # Capture post-block memory state — always, regardless of config.
+      gc_after = begin; GC.stat; rescue; {}; end
+      memory_after_mb = begin; DeadBro::MemoryHelpers.rss_mb; rescue; memory_before_mb; end
+      object_counts_after = begin
+        defined?(ObjectSpace) && ObjectSpace.respond_to?(:count_objects) ? ObjectSpace.count_objects.dup : {}
+      rescue; {}; end
 
       memory_delta_mb = (memory_after_mb - memory_before_mb).round(2)
 
-      if memory_tracking_started && !raw_events.empty?
-        begin
-          perf = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(raw_events) || {}
-
-          detailed_memory_summary = {
-            memory_growth_mb: (perf[:memory_growth_mb] || memory_delta_mb).to_f,
-            gc_count_increase: perf.dig(:gc_efficiency, :gc_count_increase) || 0,
-            heap_pages_increase: perf.dig(:gc_efficiency, :heap_pages_increase) || 0,
-            total_allocated_size_mb: (perf[:total_allocated_size_mb] || 0.0).to_f,
-            top_allocating_classes: (perf[:top_allocating_classes] || []).first(3)
-          }
-        rescue
-          detailed_memory_summary = nil
+      # Large object scan — full ObjectSpace walk. analyze is debug-only, not hot path.
+      large_objects = begin
+        if defined?(ObjectSpace) && ObjectSpace.respond_to?(:each_object) && ObjectSpace.respond_to?(:memsize_of)
+          found = []
+          ObjectSpace.each_object do |obj|
+            size = begin; ObjectSpace.memsize_of(obj); rescue; 0; end
+            next unless size > 1_000_000
+            klass = begin; obj.class.name || "Unknown"; rescue; "Unknown"; end
+            found << {class_name: klass, size_mb: (size / 1_000_000.0).round(2)}
+            break if found.length >= 50
+          end
+          found.sort_by { |h| -h[:size_mb] }
+        else
+          []
         end
-      end
+      rescue; []; end
+
+      detailed_memory_summary = DeadBro::MemoryDetails.build(
+        gc_before: gc_before,
+        gc_after: gc_after,
+        memory_before_mb: memory_before_mb,
+        memory_after_mb: memory_after_mb,
+        object_counts_before: object_counts_before,
+        object_counts_after: object_counts_after,
+        large_objects: large_objects
+      )
 
       sql_queries_segment = ""
       unless top_query_signatures.empty?
@@ -291,28 +298,17 @@ module DeadBro
         sql_queries_segment = ", sql_top_queries=[#{formatted_queries.join(" | ")}]"
       end
 
-      base_summary = "Analysis for #{label} - total_time=#{total_time_ms}ms, " \
-                     "sql_queries=#{sql_count}, sql_time=#{sql_time_ms}ms, " \
-                     "memory_before=#{memory_before_mb.round(2)}MB, " \
-                     "memory_after=#{memory_after_mb.round(2)}MB, " \
-                     "memory_delta=#{memory_delta_mb}MB" \
-                     "#{sql_queries_segment}"
-
-      summary =
-        if detailed_memory_summary
-          top_classes = (detailed_memory_summary[:top_allocating_classes] || []).map { |c|
-            "#{c[:class_name]}:#{c[:size_mb]}MB"
-          }.join(", ")
-
-          "#{base_summary}, " \
-            "memory_growth=#{detailed_memory_summary[:memory_growth_mb].round(2)}MB, " \
-            "gc_runs=+#{detailed_memory_summary[:gc_count_increase]}, " \
-            "heap_pages=+#{detailed_memory_summary[:heap_pages_increase]}, " \
-            "allocated=#{detailed_memory_summary[:total_allocated_size_mb].round(2)}MB, " \
-            "top_allocators=[#{top_classes}]"
-        else
-          base_summary
-        end
+      warnings = detailed_memory_summary[:warnings]
+      warnings_segment = warnings.any? ? ", warnings=[#{warnings.join(", ")}]" : ""
+      summary = "Analysis for #{label} - total_time=#{total_time_ms}ms, " \
+                "sql_queries=#{sql_count}, sql_time=#{sql_time_ms}ms, " \
+                "memory_before=#{memory_before_mb.round(2)}MB, " \
+                "memory_after=#{memory_after_mb.round(2)}MB, " \
+                "memory_delta=#{memory_delta_mb}MB, " \
+                "gc_collections=+#{detailed_memory_summary[:gc_collections]}, " \
+                "heap_pages_added=+#{detailed_memory_summary[:heap_pages_added]}, " \
+                "new_objects=+#{detailed_memory_summary[:new_objects]}" \
+                "#{sql_queries_segment}#{warnings_segment}"
 
       begin
         DeadBro.logger.info(summary)
@@ -342,7 +338,8 @@ module DeadBro
         memory_before_mb: memory_before_mb,
         memory_after_mb: memory_after_mb,
         memory_delta_mb: memory_delta_mb,
-        memory_details: detailed_memory_summary
+        memory_details: detailed_memory_summary,
+        verbose: verbose
       }
     end
 

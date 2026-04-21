@@ -18,8 +18,14 @@ module DeadBro
     COLOR_ERROR = "\033[31m" # Red
     COLOR_FATAL = "\033[35m"  # Magenta
 
+    # Hard cap per-thread buffer size. Prevents unbounded growth when a
+    # request/job logs a lot, or when tracking never gets a chance to flush
+    # (e.g. code running outside a request lifecycle).
+    MAX_LOG_ENTRIES = 500
+
     def initialize
       @thread_logs_key = :dead_bro_logs
+      @thread_logs_dropped_key = :dead_bro_logs_dropped
     end
 
     def debug(message)
@@ -42,29 +48,42 @@ module DeadBro
       log(:fatal, message)
     end
 
-    # Get all logs for the current thread
+    # Get all logs for the current thread. If the buffer was capped, append a
+    # synthetic marker entry so downstream consumers know entries were dropped.
     def logs
-      Thread.current[@thread_logs_key] || []
+      entries = Thread.current[@thread_logs_key] || []
+      dropped = Thread.current[@thread_logs_dropped_key] || 0
+      return entries if dropped.zero?
+
+      entries + [{
+        sev: "warn",
+        msg: "[DeadBro::Logger] #{dropped} log entries dropped (buffer cap #{MAX_LOG_ENTRIES})",
+        time: Time.now.utc.iso8601(3)
+      }]
     end
 
     # Clear logs for the current thread
     def clear
       Thread.current[@thread_logs_key] = []
+      Thread.current[@thread_logs_dropped_key] = 0
     end
 
     private
 
     def log(severity, message)
       timestamp = Time.now.utc
-      log_entry = {
-        sev: severity.to_s,
-        msg: message.to_s,
-        time: timestamp.iso8601(3) # Include milliseconds for better precision
-      }
 
-      # Store in thread-local storage
-      Thread.current[@thread_logs_key] ||= []
-      Thread.current[@thread_logs_key] << log_entry
+      buffer = (Thread.current[@thread_logs_key] ||= [])
+      if buffer.length >= MAX_LOG_ENTRIES
+        Thread.current[@thread_logs_dropped_key] =
+          (Thread.current[@thread_logs_dropped_key] || 0) + 1
+      else
+        buffer << {
+          sev: severity.to_s,
+          msg: message.to_s,
+          time: timestamp.iso8601(3) # Include milliseconds for better precision
+        }
+      end
 
       # Print the message immediately
       print_log(severity, message, timestamp)

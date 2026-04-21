@@ -433,8 +433,9 @@ RSpec.describe DeadBro::SqlSubscriber do
       stub_const("ActiveRecord::Base", active_record)
       allow(active_record).to receive(:connection).and_return(connection)
       allow(active_record).to receive(:connection_pool).and_return(connection_pool)
-      allow(connection_pool).to receive(:checkout).and_return(connection)
-      allow(connection_pool).to receive(:checkin)
+      # Background EXPLAIN now uses `connection_pool.with_connection { |conn| ... }`
+      # so the pool manages checkout/checkin itself.
+      allow(connection_pool).to receive(:with_connection).and_yield(connection)
 
       # Mock the safe interpolation
       allow(sql_subscriber).to receive(:interpolate_sql_with_binds).and_return("SELECT * FROM users WHERE id = '1'")

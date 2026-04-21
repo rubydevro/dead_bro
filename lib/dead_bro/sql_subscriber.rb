@@ -16,6 +16,17 @@ module DeadBro
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
     MAX_TRACKED_QUERIES = 1000
 
+    # Precompiled regexes used by sanitize_sql. Dynamic /.../i literals inside
+    # a hot-path method allocate a fresh Regexp on every call — pinning them
+    # here removes that allocation entirely.
+    SENSITIVE_KV_QUOTED_RE = /\b(password|token|secret|key|ssn|credit_card)\s*=\s*['"][^'"]*['"]/i
+    SENSITIVE_KV_BARE_RE   = /\b(password|token|secret|key|ssn|credit_card)\s*=\s*[^'",\s)]+/i
+    WHERE_EQ_QUOTED_RE     = /WHERE\s+[^=]+=\s*['"][^'"]*['"]/i
+    WHERE_EQ_QUOTED_INNER_RE = /=\s*['"][^'"]*['"]/
+    SANITIZE_MAX_LENGTH    = 1000
+    SANITIZE_SKIP_SENSITIVE_WHEN_NO_KEYWORDS = /password|token|secret|key|ssn|credit_card/i
+    SANITIZE_SKIP_WHERE_WHEN_NO_KEYWORD = /WHERE/i
+
     # True when there is at least one active tracking context (e.g. for nested jobs).
     def self.tracking_active?
       stack = Thread.current[THREAD_LOCAL_KEY]
@@ -62,19 +73,25 @@ module DeadBro
         next unless current
         unique_id = _unique_id
         allocations = nil
-        captured_backtrace = nil
         begin
           alloc_results = Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY]
           allocations = alloc_results && alloc_results.delete(unique_id)
-
-          # Get the captured backtrace from when the query started
-          backtrace_map = Thread.current[THREAD_LOCAL_BACKTRACE_KEY]
-          captured_backtrace = backtrace_map && backtrace_map.delete(unique_id)
         rescue
         end
 
         duration_ms = ((finished - started) * 1000.0).round(2)
         original_sql = data[:sql]
+
+        # Only capture a backtrace for queries we actually care about tracing
+        # (slow). This skips the ~O(stack-depth) allocation on the 99% of queries
+        # that are fast. An N+1 of 100 x 1ms queries no longer eats a thousand
+        # frame allocations for traces nobody will read.
+        threshold = begin
+          DeadBro.configuration.slow_query_threshold_ms
+        rescue
+          500
+        end
+        captured_trace = (duration_ms >= threshold.to_f) ? capture_app_backtrace : []
 
         query_info = {
           sql: sanitize_sql(original_sql),
@@ -82,7 +99,7 @@ module DeadBro
           duration_ms: duration_ms,
           cached: data[:cached] || false,
           connection_id: data[:connection_id],
-          trace: safe_query_trace(data, captured_backtrace),
+          trace: captured_trace,
           allocations: allocations
         }
 
@@ -115,7 +132,7 @@ module DeadBro
       # Wait for any pending EXPLAIN ANALYZE queries to complete (with timeout)
       # This must happen BEFORE we get the queries array reference to ensure
       # all explain_plan fields are populated
-      wait_for_pending_explains(5.0) # 5 second timeout
+      wait_for_pending_explains(EXPLAIN_WAIT_TIMEOUT_SECONDS)
 
       stack = Thread.current[THREAD_LOCAL_KEY]
       queries = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
@@ -130,13 +147,21 @@ module DeadBro
       queries
     end
 
+    # Upper bound on pending EXPLAIN threads per request — stops a slow-query
+    # storm from spawning unbounded background threads.
+    MAX_PENDING_EXPLAINS = 20
+    # Overall wall-clock we're willing to block the request thread for pending
+    # EXPLAINs. Dropped from 5s → 1s: if the plan isn't ready by then, skip it
+    # rather than stall the request.
+    EXPLAIN_WAIT_TIMEOUT_SECONDS = 1.0
+
     def self.wait_for_pending_explains(timeout_seconds)
       pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY]
       return unless pending && !pending.empty?
 
-      start_time = Time.now
+      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       pending.each do |thread|
-        remaining_time = timeout_seconds - (Time.now - start_time)
+        remaining_time = timeout_seconds - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time)
         break if remaining_time <= 0
 
         begin
@@ -150,17 +175,26 @@ module DeadBro
     def self.sanitize_sql(sql)
       return sql unless sql.is_a?(String)
 
-      # Remove sensitive data patterns
-      sql = sql.gsub(/\b(password|token|secret|key|ssn|credit_card)\s*=\s*['"][^'"]*['"]/i, '\1 = ?')
-      sql = sql.gsub(/\b(password|token|secret|key|ssn|credit_card)\s*=\s*[^'",\s)]+/i, '\1 = ?')
+      # Cap length first — most "expensive" queries from the app's perspective
+      # are big UPDATE/INSERT with long literal blobs; don't burn regex time on
+      # those when we're going to truncate anyway.
+      sql = sql[0..SANITIZE_MAX_LENGTH] + "..." if sql.length > SANITIZE_MAX_LENGTH
 
-      # Remove specific values in WHERE clauses that might be sensitive
-      sql = sql.gsub(/WHERE\s+[^=]+=\s*['"][^'"]*['"]/i) do |match|
-        match.gsub(/=\s*['"][^'"]*['"]/, "= ?")
+      # Only scan for sensitive KV pairs if one of the keywords is actually
+      # present — saves two regex passes on the vast majority of queries.
+      if sql.match?(SANITIZE_SKIP_SENSITIVE_WHEN_NO_KEYWORDS)
+        sql = sql.gsub(SENSITIVE_KV_QUOTED_RE, '\1 = ?')
+        sql = sql.gsub(SENSITIVE_KV_BARE_RE, '\1 = ?')
       end
 
-      # Limit query length to prevent huge payloads
-      (sql.length > 1000) ? sql[0..1000] + "..." : sql
+      # Same short-circuit for WHERE rewrite.
+      if sql.match?(SANITIZE_SKIP_WHERE_WHEN_NO_KEYWORD)
+        sql = sql.gsub(WHERE_EQ_QUOTED_RE) do |match|
+          match.gsub(WHERE_EQ_QUOTED_INNER_RE, "= ?")
+        end
+      end
+
+      sql
     end
 
     def self.should_explain_query?(duration_ms, sql)
@@ -185,64 +219,47 @@ module DeadBro
       return unless defined?(ActiveRecord)
       return unless ActiveRecord::Base.respond_to?(:connection)
 
+      # Cap pending EXPLAINs per request. A slow-query storm that would have
+      # spawned 200 threads and starved the AR pool now drops excess plans
+      # instead of cascading into a timeout.
+      pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] ||= []
+      if pending.length >= MAX_PENDING_EXPLAINS
+        query_info[:explain_plan] = nil
+        return
+      end
+
       # Capture the main thread reference to append logs to the correct thread
       main_thread = Thread.current
 
-      # Run EXPLAIN in a background thread to avoid blocking the main request
+      # Run EXPLAIN in a background thread to avoid blocking the main request.
+      # We use `with_connection` so the connection returns to the pool even if
+      # the thread is killed or the block raises — the previous manual
+      # checkout/checkin could leak a connection under pathological paths.
       explain_thread = Thread.new do
-        connection = nil
         begin
-          # Use a separate connection to avoid interfering with the main query
-          connection = if ActiveRecord::Base.connection_pool.respond_to?(:checkout)
-            ActiveRecord::Base.connection_pool.checkout
-          else
-            ActiveRecord::Base.connection
-          end
+          ActiveRecord::Base.connection_pool.with_connection do |connection|
+            final_sql = interpolate_sql_with_binds(sql, binds, connection)
+            explain_sql = build_explain_query(final_sql, connection)
 
-          # Interpolate binds if present to ensure EXPLAIN works with placeholders
-          final_sql = interpolate_sql_with_binds(sql, binds, connection)
+            adapter_name = connection.adapter_name.downcase
+            result = if adapter_name == "postgresql" || adapter_name == "postgis"
+              connection.select_all(explain_sql)
+            else
+              connection.execute(explain_sql)
+            end
 
-          # Build EXPLAIN query based on database adapter
-          explain_sql = build_explain_query(final_sql, connection)
-
-          # Execute the EXPLAIN query
-          # For PostgreSQL, use select_all which returns ActiveRecord::Result
-          # For other databases, use execute
-          adapter_name = connection.adapter_name.downcase
-          result = if adapter_name == "postgresql" || adapter_name == "postgis"
-            # PostgreSQL: select_all returns ActiveRecord::Result with rows
-            connection.select_all(explain_sql)
-          else
-            # Other databases: use execute
-            connection.execute(explain_sql)
-          end
-
-          # Format the result based on database adapter
-          explain_plan = format_explain_result(result, connection)
-
-          # Update the query_info with the explain plan
-          # This updates the hash that's already in the queries array
-          query_info[:explain_plan] = if explain_plan && !explain_plan.to_s.strip.empty?
-            explain_plan
-          end
-        rescue => e
-          # Silently fail - don't let EXPLAIN break the application
-          append_log_to_thread(main_thread, :debug, "Failed to capture EXPLAIN ANALYZE: #{e.message}")
-          query_info[:explain_plan] = nil
-        ensure
-          # Return connection to pool if we checked it out
-          if connection && ActiveRecord::Base.connection_pool.respond_to?(:checkin)
-            begin
-              ActiveRecord::Base.connection_pool.checkin(connection)
-            rescue
-              nil
+            explain_plan = format_explain_result(result, connection)
+            query_info[:explain_plan] = if explain_plan && !explain_plan.to_s.strip.empty?
+              explain_plan
             end
           end
+        rescue => e
+          # Silently fail — don't let EXPLAIN break the application.
+          append_log_to_thread(main_thread, :debug, "Failed to capture EXPLAIN ANALYZE: #{e.message}")
+          query_info[:explain_plan] = nil
         end
       end
 
-      # Track the thread so we can wait for it when stopping request tracking
-      pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] ||= []
       pending << explain_thread
     rescue => e
       # Use DeadBro.logger here since we're still in the main thread
@@ -419,6 +436,27 @@ module DeadBro
       result.to_s
     end
 
+    APP_BACKTRACE_MAX_FRAMES = 25
+    APP_BACKTRACE_SENSITIVE_RE = /\/[^\/]*(password|secret|key|token)[^\/]*\//i
+
+    # Cheap app-only backtrace for the current query. Uses caller_locations
+    # (lazy frame objects, no string allocations until we render) and keeps
+    # only frames under app/ (filtering vendor/). Returns at most N frames.
+    def self.capture_app_backtrace
+      locations = caller_locations(1, 100) || []
+      frames = []
+      locations.each do |loc|
+        path = loc.path.to_s
+        next unless path.include?("app/")
+        next if path.include?("/vendor/")
+        frames << "#{path}:#{loc.lineno}:in `#{loc.label}'".gsub(APP_BACKTRACE_SENSITIVE_RE, "/[FILTERED]/")
+        break if frames.length >= APP_BACKTRACE_MAX_FRAMES
+      end
+      frames
+    rescue
+      []
+    end
+
     def self.safe_query_trace(data, captured_backtrace = nil)
       return [] unless data.is_a?(Hash)
 
@@ -520,15 +558,10 @@ module DeadBro
     def start(name, id, payload)
       map = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY] ||= {})
       map[id] = GC.stat[:total_allocated_objects] if defined?(GC) && GC.respond_to?(:stat)
-
-      # Capture the backtrace at query start time (before notification system processes it)
-      # This gives us the actual call stack where the SQL was executed
-      backtrace_map = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_BACKTRACE_KEY] ||= {})
-      captured_backtrace = Thread.current.backtrace
-      if captured_backtrace && captured_backtrace.is_a?(Array)
-        # Skip the first few frames (our listener code) to get to the actual query execution
-        backtrace_map[id] = captured_backtrace[5..-1] || captured_backtrace
-      end
+      # Backtraces used to be captured here for every SQL event, which was
+      # dominating CPU on N+1-heavy requests (100s of full Thread#backtrace
+      # allocations). The main subscriber now captures a trimmed backtrace
+      # lazily — and only when a query exceeds slow_query_threshold_ms.
     rescue
     end
 

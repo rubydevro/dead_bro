@@ -19,7 +19,7 @@ module DeadBro
         # Use the error class name as the event name
         event_name = exception.class.name.to_s
         event_name = EVENT_NAME if event_name.empty?
-        @client.post_metric(event_name: event_name, payload: payload)
+        @client.post_metric(event_name: event_name, payload: payload, force: true)
       rescue
         # Never let APM reporting interfere with the host app
       end

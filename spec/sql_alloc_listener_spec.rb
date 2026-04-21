@@ -34,21 +34,12 @@ RSpec.describe DeadBro::SqlAllocListener do
       expect(start_map[event_id]).to eq(1000)
     end
 
-    it "captures the backtrace" do
-      # Mock the backtrace to ensure predictable results and test the slicing logic
-      mock_backtrace = [
-        "frame1", "frame2", "frame3", "frame4", "frame5", # skipped frames
-        "app/models/user.rb:10",
-        "app/controllers/users_controller.rb:20"
-      ]
-      allow(Thread.current).to receive(:backtrace).and_return(mock_backtrace)
-
+    it "does not eagerly capture a backtrace on every SQL event" do
+      # Backtrace capture was moved out of the hot `#start` path (it dominated
+      # CPU under N+1 workloads). Backtraces are now captured lazily, only for
+      # slow queries, in SqlSubscriber#capture_app_backtrace.
       listener.start("sql.active_record", event_id, {})
-
-      backtrace_map = Thread.current[backtrace_key]
-      expect(backtrace_map).not_to be_nil
-      # It should slice the first 5 frames
-      expect(backtrace_map[event_id]).to eq(["app/models/user.rb:10", "app/controllers/users_controller.rb:20"])
+      expect(Thread.current[backtrace_key]).to be_nil
     end
   end
 
