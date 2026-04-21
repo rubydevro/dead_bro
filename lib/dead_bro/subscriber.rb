@@ -12,6 +12,7 @@ module DeadBro
         # can detect when tracking has been re-enabled, then skip all tracking.
         unless DeadBro.configuration.enabled
           client.post_heartbeat if DeadBro.configuration.heartbeat_due?
+          drain_request_tracking
           next
         end
 
@@ -21,9 +22,23 @@ module DeadBro
         controller_name = notification[:controller].to_s
         action_name = notification[:action].to_s
         begin
-          next if DeadBro.configuration.excluded_controller?(controller_name, action_name)
-          next unless DeadBro.configuration.exclusive_controller?(controller_name, action_name)
+          if DeadBro.configuration.excluded_controller?(controller_name, action_name)
+            drain_request_tracking
+            next
+          end
+          unless DeadBro.configuration.exclusive_controller?(controller_name, action_name)
+            drain_request_tracking
+            next
+          end
         rescue
+          drain_request_tracking
+          next
+        end
+
+        has_error = data[:exception] || data[:exception_object]
+        # Errors always ship regardless of sampling (this is what the docs promise).
+        unless has_error || DeadBro.configuration.should_sample?
+          drain_request_tracking
           next
         end
 
@@ -108,7 +123,7 @@ module DeadBro
             }
 
             event_name = (exception_class || exception_obj&.class&.name || "exception").to_s
-            client.post_metric(event_name: event_name, payload: error_payload)
+            client.post_metric(event_name: event_name, payload: error_payload, force: true)
           rescue
           ensure
             next
@@ -147,6 +162,23 @@ module DeadBro
         }
         client.post_metric(event_name: name, payload: payload)
       end
+    end
+
+    # Release per-subscriber thread-local state when we've decided not to build
+    # a payload (disabled / excluded / sampled out). Without this, a subsequent
+    # request reusing the same Puma thread would see stale queries/events.
+    def self.drain_request_tracking
+      DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
+      DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
+      DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
+      DeadBro::ViewRenderingSubscriber.stop_request_tracking if defined?(DeadBro::ViewRenderingSubscriber)
+      DeadBro::LightweightMemoryTracker.stop_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
+      if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+        DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+      end
+      Thread.current[:dead_bro_http_events] = nil
+    rescue
+      # Best effort — draining must never raise from the notifications callback.
     end
 
     def self.safe_path(data)
@@ -261,17 +293,7 @@ module DeadBro
     end
 
     def self.memory_usage_mb
-      if defined?(GC) && GC.respond_to?(:stat)
-        # Get memory usage in MB
-        memory_kb = begin
-          `ps -o rss= -p #{Process.pid}`.to_i
-        rescue
-          0
-        end
-        (memory_kb / 1024.0).round(2)
-      else
-        0
-      end
+      DeadBro::MemoryHelpers.rss_mb
     rescue
       0
     end

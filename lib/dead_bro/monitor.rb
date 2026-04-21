@@ -2,15 +2,23 @@
 
 module DeadBro
   class Monitor
+    SLEEP_INTERVAL_SECONDS = 60
+
     def initialize(client: DeadBro.client)
       @client = client
       @thread = nil
       @running = false
+      @stop_mutex = Mutex.new
+      @stop_cv = ConditionVariable.new
     end
 
     def start
-      return if @running
-      return unless DeadBro.configuration.job_queue_monitoring_enabled
+      # Live thread already running — nothing to do.
+      return if @running && @thread&.alive?
+
+      # Reset: handles post-fork where @running=true but the thread is dead.
+      @running = false
+
       return unless DeadBro.configuration.enabled
 
       @running = true
@@ -25,8 +33,12 @@ module DeadBro
             log_error("Error collecting stats: #{e.message}")
           end
 
-          # Sleep for 60 seconds (1 minute)
-          sleep(60)
+          # Interruptible sleep — stop() signals the CV so shutdown doesn't
+          # block up to a full minute. Still naps the full interval during
+          # normal operation.
+          @stop_mutex.synchronize do
+            @stop_cv.wait(@stop_mutex, SLEEP_INTERVAL_SECONDS) if @running
+          end
         end
       end
 
@@ -35,7 +47,8 @@ module DeadBro
 
     def stop
       @running = false
-      @thread&.join(5) # Wait up to 5 seconds for thread to finish
+      @stop_mutex.synchronize { @stop_cv.broadcast }
+      @thread&.join(5) # Safety timeout in case the thread is mid-flight
       @thread = nil
     end
 

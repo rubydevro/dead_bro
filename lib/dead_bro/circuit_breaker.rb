@@ -25,15 +25,17 @@ module DeadBro
       @failure_count = 0
       @last_failure_time = nil
       @last_success_time = nil
+      @mutex = Mutex.new
     end
 
     def call(&block)
-      case @state
+      state = @mutex.synchronize { @state }
+      case state
       when CLOSED
         execute_with_monitoring(&block)
       when OPEN
         if should_attempt_reset?
-          @state = HALF_OPEN
+          @mutex.synchronize { @state = HALF_OPEN }
           execute_with_monitoring(&block)
         else
           :circuit_open
@@ -43,75 +45,93 @@ module DeadBro
       end
     end
 
-    attr_reader :state
+    def state
+      @mutex.synchronize { @state }
+    end
 
-    attr_reader :failure_count
+    def failure_count
+      @mutex.synchronize { @failure_count }
+    end
 
-    attr_reader :last_failure_time
+    def last_failure_time
+      @mutex.synchronize { @last_failure_time }
+    end
 
-    attr_reader :last_success_time
+    def last_success_time
+      @mutex.synchronize { @last_success_time }
+    end
 
     def reset!
-      @state = CLOSED
-      @failure_count = 0
-      @last_failure_time = nil
+      @mutex.synchronize do
+        @state = CLOSED
+        @failure_count = 0
+        @last_failure_time = nil
+      end
     end
 
     def open!
-      @state = OPEN
-      @last_failure_time = Time.now
+      @mutex.synchronize do
+        @state = OPEN
+        @last_failure_time = Time.now
+      end
     end
 
     def transition_to_half_open!
-      @state = HALF_OPEN
+      @mutex.synchronize { @state = HALF_OPEN }
     end
 
     def should_attempt_reset?
-      return false unless @last_failure_time
+      @mutex.synchronize do
+        return false unless @last_failure_time
+        (Time.now - @last_failure_time) >= @recovery_timeout
+      end
+    end
 
-      # Try to reset after recovery timeout
-      elapsed = Time.now - @last_failure_time
-      elapsed >= @recovery_timeout
+    # Public entry points for callers that already know the outcome (e.g. the
+    # HTTP dispatcher thread). Preferred over `call(&block)` when the caller
+    # is doing its own error handling.
+    def record_success
+      @mutex.synchronize do
+        @failure_count = 0
+        @last_success_time = Time.now
+        @state = CLOSED
+      end
+    end
+
+    def record_failure
+      @mutex.synchronize do
+        @failure_count += 1
+        @last_failure_time = Time.now
+        if @state == HALF_OPEN || @failure_count >= @failure_threshold
+          @state = OPEN
+        end
+      end
     end
 
     private
+
+    # Historical names kept as private aliases so existing specs and any
+    # internal callers that reach in via `send(:on_success)` still work.
+    alias_method :on_success, :record_success
+    alias_method :on_failure, :record_failure
 
     def execute_with_monitoring(&block)
       result = block.call
 
       if success?(result)
-        on_success
+        record_success
         result
       else
-        on_failure
+        record_failure
         result
       end
     rescue => e
-      on_failure
+      record_failure
       raise e
     end
 
     def success?(result)
-      # Consider 2xx status codes as success
       result.is_a?(Net::HTTPSuccess)
-    end
-
-    def on_success
-      @failure_count = 0
-      @last_success_time = Time.now
-      @state = CLOSED
-    end
-
-    def on_failure
-      @failure_count += 1
-      @last_failure_time = Time.now
-
-      # If we're in half-open state and get a failure, go back to open
-      if @state == HALF_OPEN
-        @state = OPEN
-      elsif @failure_count >= @failure_threshold
-        @state = OPEN
-      end
     end
   end
 end

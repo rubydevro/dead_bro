@@ -21,6 +21,10 @@ end
 require "dead_bro"
 require "net/http"
 
+# Run HTTP dispatcher jobs inline in specs so tests don't need to poll for
+# background workers to finish.
+DeadBro::Dispatcher.inline = true
+
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
   config.example_status_persistence_file_path = ".rspec_status"

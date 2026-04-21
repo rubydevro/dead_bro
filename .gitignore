@@ -12,3 +12,6 @@
 dead_bro-*
 .DS_Store
 FEATURES.md
+
+# Private notes / design docs (not for the public repo)
+/docs/

@@ -4,6 +4,68 @@ module DeadBro
   module MemoryHelpers
     # Helper methods for memory tracking and leak detection
 
+    RSS_CACHE_TTL_SECONDS = 1.0
+    @rss_cache_mutex = Mutex.new
+    @rss_cache = nil # [value_bytes, captured_at_monotonic]
+
+    # Current process RSS in bytes. Uses /proc/self/status on Linux (cheap read)
+    # and falls back to `ps` elsewhere. Result is cached for 1s across threads
+    # so this is safe to call from every request without flooding the kernel.
+    def self.rss_bytes
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      cached = @rss_cache
+      if cached && (now - cached[1]) < RSS_CACHE_TTL_SECONDS
+        return cached[0]
+      end
+
+      value = read_rss_bytes
+      @rss_cache_mutex.synchronize do
+        # Re-check inside the lock to avoid racing a newer reading.
+        cached = @rss_cache
+        if cached.nil? || (now - cached[1]) >= RSS_CACHE_TTL_SECONDS
+          @rss_cache = [value, now]
+        end
+      end
+      value
+    rescue
+      0
+    end
+
+    def self.rss_mb
+      (rss_bytes.to_f / (1024 * 1024)).round(2)
+    rescue
+      0.0
+    end
+
+    def self.read_rss_bytes
+      if File.readable?("/proc/self/status")
+        read_rss_from_proc_status
+      else
+        read_rss_from_ps
+      end
+    rescue
+      0
+    end
+
+    def self.read_rss_from_proc_status
+      File.foreach("/proc/self/status") do |line|
+        next unless line.start_with?("VmRSS:")
+        kb = line.split[1].to_i
+        return kb * 1024 if kb > 0
+      end
+      0
+    rescue
+      0
+    end
+
+    def self.read_rss_from_ps
+      kb = `ps -o rss= -p #{Process.pid}`.to_i
+      return 0 if kb <= 0
+      kb * 1024
+    rescue
+      0
+    end
+
     # Take a memory snapshot with a custom label
     def self.snapshot(label)
       DeadBro::MemoryTrackingSubscriber.take_memory_snapshot(label)

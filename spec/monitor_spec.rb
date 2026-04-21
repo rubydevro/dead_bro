@@ -33,15 +33,44 @@ RSpec.describe DeadBro::Monitor do
   end
 
   describe "#start" do
-    it "does not start if already running" do
-      monitor.instance_variable_set(:@running, true)
-      expect(monitor.start).to be_nil
+    it "does not start if already running with a live thread" do
+      allow(monitor).to receive(:collect_and_send_stats)
+      monitor.start
+      first_thread = monitor.instance_variable_get(:@thread)
+
+      # Call start again while thread is alive — must be a no-op
+      result = monitor.start
+      expect(result).to be_nil
+      expect(monitor.instance_variable_get(:@thread)).to equal(first_thread)
+
+      monitor.stop
     end
 
-    it "does not start if job_queue_monitoring_enabled is false" do
+    it "restarts after a dead thread (post-fork scenario)" do
+      allow(monitor).to receive(:collect_and_send_stats)
+      monitor.start
+
+      # Simulate fork: @running=true but thread is dead
+      monitor.instance_variable_get(:@thread).kill.join
+      expect(monitor.instance_variable_get(:@thread).alive?).to be false
+
+      # start must detect dead thread and spawn a new one
+      new_thread = monitor.start
+      expect(new_thread).to be_a(Thread)
+      expect(new_thread.alive?).to be true
+
+      monitor.stop
+    end
+
+    it "starts even when job_queue_monitoring_enabled is false" do
       DeadBro.configuration.job_queue_monitoring_enabled = false
-      expect(monitor.start).to be_nil
-      expect(monitor.instance_variable_get(:@running)).to be false
+      allow(monitor).to receive(:collect_and_send_stats)
+
+      thread = monitor.start
+      expect(thread).to be_a(Thread)
+      expect(monitor.instance_variable_get(:@running)).to be true
+
+      monitor.stop
     end
 
     it "does not start if enabled is false" do
