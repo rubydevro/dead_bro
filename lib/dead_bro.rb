@@ -13,6 +13,7 @@ module DeadBro
   autoload :SqlTrackingMiddleware, "dead_bro/sql_tracking_middleware"
   autoload :CacheSubscriber, "dead_bro/cache_subscriber"
   autoload :RedisSubscriber, "dead_bro/redis_subscriber"
+  autoload :ElasticsearchSubscriber, "dead_bro/elasticsearch_subscriber"
   autoload :ViewRenderingSubscriber, "dead_bro/view_rendering_subscriber"
   autoload :MemoryTrackingSubscriber, "dead_bro/memory_tracking_subscriber"
   autoload :MemoryLeakDetector, "dead_bro/memory_leak_detector"
@@ -29,6 +30,57 @@ module DeadBro
   end
 
   class Error < StandardError; end
+
+  # Returned by DeadBro.analyze. sql_queries is intentionally omitted from
+  # inspect/to_s/pretty_print to avoid bloating console output.
+  # Access it explicitly via .sql_queries.
+  class AnalysisResult
+    attr_reader :label, :total_time_ms, :sql_count, :sql_time_ms,
+                :sql_queries, :memory_before_mb, :memory_after_mb,
+                :memory_delta_mb, :memory_details, :verbose
+
+    def initialize(label:, total_time_ms:, sql_count:, sql_time_ms:, sql_queries:,
+                   memory_before_mb:, memory_after_mb:, memory_delta_mb:,
+                   memory_details:, verbose:)
+      @label = label
+      @total_time_ms = total_time_ms
+      @sql_count = sql_count
+      @sql_time_ms = sql_time_ms
+      @sql_queries = sql_queries
+      @memory_before_mb = memory_before_mb
+      @memory_after_mb = memory_after_mb
+      @memory_delta_mb = memory_delta_mb
+      @memory_details = memory_details
+      @verbose = verbose
+    end
+
+    def inspect
+      "#<DeadBro::AnalysisResult label=#{label.inspect} total_time_ms=#{total_time_ms} " \
+        "sql_count=#{sql_count} sql_time_ms=#{sql_time_ms} " \
+        "memory_before_mb=#{memory_before_mb} memory_after_mb=#{memory_after_mb} " \
+        "memory_delta_mb=#{memory_delta_mb}>"
+    end
+
+    alias_method :to_s, :inspect
+
+    def most_queries
+      sql_queries.max_by(5) { |q| q[:count] }
+    end
+
+    def longest_queries
+      sql_queries.max_by(5) { |q| q[:total_time_ms] }
+    end
+
+    def pretty_print(pp)
+      pp.text(inspect)
+    end
+
+    def [](key)
+      public_send(key)
+    rescue NoMethodError
+      nil
+    end
+  end
 
   def self.configure
     yield configuration
@@ -102,7 +154,8 @@ module DeadBro
   # - memory before/after and delta
   # - when detailed memory tracking is enabled, GC and allocation stats
   #
-  # The return value of this method is a hash with the following keys:
+  # The return value is a DeadBro::AnalysisResult struct. sql_queries is omitted from
+  # inspect/to_s but accessible via .sql_queries. Other members:
   # - :label
   # - :total_time_ms
   # - :sql_count
@@ -249,8 +302,6 @@ module DeadBro
         entry[:type] ||= q[:query_type]
       end
 
-      top_query_signatures = query_signatures.sort_by { |_, data| -data[:count] }.first(3)
-
       # Capture post-block memory state — always, regardless of config.
       gc_after = begin; GC.stat; rescue; {}; end
       memory_after_mb = begin; DeadBro::MemoryHelpers.rss_mb; rescue; memory_before_mb; end
@@ -287,38 +338,6 @@ module DeadBro
         large_objects: large_objects
       )
 
-      sql_queries_segment = ""
-      unless top_query_signatures.empty?
-        formatted_queries = top_query_signatures.map do |sig, data|
-          type = data[:type] || "SQL"
-          count = data[:count]
-          total_ms = data[:total_time_ms].round(2)
-          "#{type} #{sig} (#{count}x, #{total_ms}ms)"
-        end
-        sql_queries_segment = ", sql_top_queries=[#{formatted_queries.join(" | ")}]"
-      end
-
-      warnings = detailed_memory_summary[:warnings]
-      warnings_segment = warnings.any? ? ", warnings=[#{warnings.join(", ")}]" : ""
-      summary = "Analysis for #{label} - total_time=#{total_time_ms}ms, " \
-                "sql_queries=#{sql_count}, sql_time=#{sql_time_ms}ms, " \
-                "memory_before=#{memory_before_mb.round(2)}MB, " \
-                "memory_after=#{memory_after_mb.round(2)}MB, " \
-                "memory_delta=#{memory_delta_mb}MB, " \
-                "gc_collections=+#{detailed_memory_summary[:gc_collections]}, " \
-                "heap_pages_added=+#{detailed_memory_summary[:heap_pages_added]}, " \
-                "new_objects=+#{detailed_memory_summary[:new_objects]}" \
-                "#{sql_queries_segment}#{warnings_segment}"
-
-      begin
-        DeadBro.logger.info(summary)
-      rescue
-        begin
-          $stdout.puts("[DeadBro] #{summary}")
-        rescue
-        end
-      end
-
       # Build structured result hash to return to the caller
       sql_queries_detail = query_signatures.map do |sig, data|
         {
@@ -329,7 +348,7 @@ module DeadBro
         }
       end
 
-      analysis_result = {
+      analysis_result = AnalysisResult.new(
         label: label,
         total_time_ms: total_time_ms,
         sql_count: sql_count,
@@ -340,7 +359,7 @@ module DeadBro
         memory_delta_mb: memory_delta_mb,
         memory_details: detailed_memory_summary,
         verbose: verbose
-      }
+      )
     end
 
     raise error if error

@@ -388,6 +388,69 @@ The control plane job sends a single JSON payload roughly shaped like:
 Not all fields will be present in all environments; unsupported or unavailable metrics may be `null` or omitted, and any hard failures are captured in `error_class` / `error_message` fields per section.
 
 
+## One-Off Analysis with `DeadBro.analyze`
+
+Use `DeadBro.analyze` to profile any block of code inline — useful in the Rails console, rake tasks, or debug sessions. It tracks execution time, SQL queries, and memory usage without sending data to the DeadBro backend.
+
+```ruby
+result = DeadBro.analyze("load active users") do
+  User.where(active: true).includes(:profile).to_a
+end
+```
+
+Returns a `DeadBro::AnalysisResult` struct.
+
+### Return Value
+
+`DeadBro::AnalysisResult` exposes:
+
+| Member | Type | Description |
+|---|---|---|
+| `label` | String | Label passed to the block |
+| `total_time_ms` | Float | Wall time of the block |
+| `sql_count` | Integer | Number of SQL queries executed |
+| `sql_time_ms` | Float | Total SQL execution time |
+| `sql_queries` | Array | Per-query breakdown (see below) |
+| `memory_before_mb` | Float | RSS before block |
+| `memory_after_mb` | Float | RSS after block |
+| `memory_delta_mb` | Float | Memory change |
+| `memory_details` | Hash | GC stats, new objects, heap pages |
+
+**`sql_queries` is intentionally excluded from `inspect`/`to_s`** to avoid flooding the console with a long array. Access it explicitly when needed:
+
+```ruby
+result             # => #<DeadBro::AnalysisResult label="load active users" total_time_ms=42.3 ...>
+result.sql_queries # => [{sql: "SELECT ...", query_type: "SELECT", count: 3, total_time_ms: 12.1}, ...]
+```
+
+### Options
+
+```ruby
+DeadBro.analyze("my block", verbose: true) do
+  # verbose: true lowers the Rails log level to DEBUG and enables
+  # ActiveRecord.verbose_query_logs for the duration of the block
+  MyService.call
+end
+```
+
+### Helper methods
+
+```ruby
+result.most_queries    # top 5 query patterns by execution count
+result.longest_queries # top 5 query patterns by total_time_ms
+```
+
+Both return an array of query hashes (same shape as `sql_queries`):
+
+- `sql` — normalized SQL (literals replaced, whitespace collapsed)
+- `query_type` — e.g. `"SELECT"`, `"INSERT"`, `"UPDATE"`
+- `count` — how many times this pattern ran
+- `total_time_ms` — combined time across all occurrences
+
+### `sql_queries` fields
+
+`result.sql_queries` returns the full list. Each entry is a hash with the same fields as above.
+
 ## Development
 
 After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.

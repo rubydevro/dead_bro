@@ -40,6 +40,11 @@ module DeadBro
         DeadBro::MemoryTrackingSubscriber.start_request_tracking
       end
 
+      # Start Elasticsearch tracking for this request
+      if defined?(DeadBro::ElasticsearchSubscriber)
+        DeadBro::ElasticsearchSubscriber.start_request_tracking
+      end
+
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
 
@@ -74,7 +79,8 @@ module DeadBro
         Thread.current[:dead_bro_lightweight_memory] = nil
       end
 
-      # Clean up HTTP events and tracking start time
+      # Clean up HTTP events, ES events, and tracking start time
+      Thread.current[:dead_bro_elasticsearch_events] = nil
       Thread.current[:dead_bro_http_events] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end

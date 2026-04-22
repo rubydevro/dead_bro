@@ -46,9 +46,10 @@ module DeadBro
         # Stop SQL tracking and get collected queries (this was started by the request)
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
 
-        # Stop cache and redis tracking
+        # Stop cache, redis, and elasticsearch tracking
         cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
         redis_events = defined?(DeadBro::RedisSubscriber) ? DeadBro::RedisSubscriber.stop_request_tracking : []
+        elasticsearch_events = defined?(DeadBro::ElasticsearchSubscriber) ? DeadBro::ElasticsearchSubscriber.stop_request_tracking : []
 
         # Stop view rendering tracking and get collected view events
         view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
@@ -152,6 +153,7 @@ module DeadBro
           http_outgoing: Thread.current[:dead_bro_http_events] || [],
           cache_events: cache_events,
           redis_events: redis_events,
+          elasticsearch_events: elasticsearch_events,
           cache_hits: cache_hits(data),
           cache_misses: cache_misses(data),
           view_events: view_events,
@@ -171,6 +173,7 @@ module DeadBro
       DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
       DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
+      DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
       DeadBro::ViewRenderingSubscriber.stop_request_tracking if defined?(DeadBro::ViewRenderingSubscriber)
       DeadBro::LightweightMemoryTracker.stop_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
       if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
