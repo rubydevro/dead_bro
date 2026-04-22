@@ -151,9 +151,8 @@ module DeadBro
     # storm from spawning unbounded background threads.
     MAX_PENDING_EXPLAINS = 20
     # Overall wall-clock we're willing to block the request thread for pending
-    # EXPLAINs. Dropped from 5s → 1s: if the plan isn't ready by then, skip it
-    # rather than stall the request.
-    EXPLAIN_WAIT_TIMEOUT_SECONDS = 1.0
+    # EXPLAINs. If the plan isn't ready by then, skip it rather than stall the request.
+    EXPLAIN_WAIT_TIMEOUT_SECONDS = 5.0
 
     def self.wait_for_pending_explains(timeout_seconds)
       pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY]

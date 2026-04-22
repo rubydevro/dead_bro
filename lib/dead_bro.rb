@@ -13,6 +13,7 @@ module DeadBro
   autoload :SqlTrackingMiddleware, "dead_bro/sql_tracking_middleware"
   autoload :CacheSubscriber, "dead_bro/cache_subscriber"
   autoload :RedisSubscriber, "dead_bro/redis_subscriber"
+  autoload :ElasticsearchSubscriber, "dead_bro/elasticsearch_subscriber"
   autoload :ViewRenderingSubscriber, "dead_bro/view_rendering_subscriber"
   autoload :MemoryTrackingSubscriber, "dead_bro/memory_tracking_subscriber"
   autoload :MemoryLeakDetector, "dead_bro/memory_leak_detector"

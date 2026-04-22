@@ -32,6 +32,10 @@ if defined?(Rails) && defined?(Rails::Railtie)
           require "dead_bro/redis_subscriber"
           DeadBro::RedisSubscriber.subscribe!
 
+          # Install Elasticsearch / OpenSearch tracking
+          require "dead_bro/elasticsearch_subscriber"
+          DeadBro::ElasticsearchSubscriber.subscribe!
+
           # Install view rendering tracking
           require "dead_bro/view_rendering_subscriber"
           DeadBro::ViewRenderingSubscriber.subscribe!(client: shared_client)
