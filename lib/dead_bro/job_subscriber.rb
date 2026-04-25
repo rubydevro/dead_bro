@@ -215,7 +215,7 @@ module DeadBro
           (arg.length > 200) ? arg[0, 200] + "..." : arg
         when Hash
           # Filter sensitive keys and limit size
-          filtered = arg.except(*%w[password token secret key])
+          filtered = arg.reject { |k, _| %w[password token secret key].include?(k.to_s) }
           (filtered.keys.size > 20) ? filtered.first(20).to_h : filtered
         when Array
           arg.first(5)

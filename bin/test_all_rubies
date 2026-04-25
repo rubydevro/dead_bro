@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSIONS=(2.7.3 3.1.6 3.3.10 3.4.4)
+
+PASS=()
+FAIL=()
+
+for version in "${VERSIONS[@]}"; do
+  echo ""
+  echo "=============================="
+  echo "Ruby $version"
+  echo "=============================="
+
+  if ! RBENV_VERSION=$version rbenv which ruby &>/dev/null; then
+    echo "SKIP: $version not installed (run: rbenv install $version)"
+    continue
+  fi
+
+  if RBENV_VERSION=$version bundle install --quiet && RBENV_VERSION=$version bundle exec rspec; then
+    PASS+=("$version")
+  else
+    FAIL+=("$version")
+  fi
+done
+
+echo ""
+echo "=============================="
+echo "Results"
+echo "=============================="
+[[ ${#PASS[@]} -gt 0 ]] && for v in "${PASS[@]}"; do echo "  PASS  $v"; done
+[[ ${#FAIL[@]} -gt 0 ]] && for v in "${FAIL[@]}"; do echo "  FAIL  $v"; done
+
+[[ ${#FAIL[@]} -eq 0 ]]

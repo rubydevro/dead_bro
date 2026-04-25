@@ -11,7 +11,9 @@ gem "rspec", "~> 3.0"
 
 gem "simplecov", "~> 0.22", require: false
 
-gem "standard", "~> 1.3"
+# standard requires Ruby >= 3.0; omit when running under 2.7
+# gem "standard", "~> 1.3"
 
 # For testing ActiveSupport::Notifications functionality
-gem "activesupport", "~> 7.0", require: false
+gem "activesupport", "~> 7.1.0", require: false
+gem "minitest", "< 5.25"
