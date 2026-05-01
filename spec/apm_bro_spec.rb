@@ -107,6 +107,23 @@ RSpec.describe DeadBro do
       ENV.delete("HEROKU_SLUG_COMMIT")
     end
 
+    it "prefers config.deploy_id over environment variables when set" do
+      config = DeadBro::Configuration.new
+      ENV["DEAD_BRO_DEPLOY_ID"] = "from-env"
+      ENV["GIT_REV"] = "from-git"
+      config.deploy_id = "from-ruby"
+      expect(config.resolve_deploy_id).to eq("from-ruby")
+      ENV.delete("DEAD_BRO_DEPLOY_ID")
+      ENV.delete("GIT_REV")
+    end
+
+    it "resolves deploy_id from GIT_COMMIT_SHA when higher-priority vars are absent" do
+      config = DeadBro::Configuration.new
+      ENV["GIT_COMMIT_SHA"] = "sha-deadbeef"
+      expect(config.resolve_deploy_id).to eq("sha-deadbeef")
+      ENV.delete("GIT_COMMIT_SHA")
+    end
+
     it "has memory tracking configuration" do
       config = DeadBro::Configuration.new
       expect(config.memory_tracking_enabled).to be true
