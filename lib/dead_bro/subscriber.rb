@@ -16,6 +16,12 @@ module DeadBro
           next
         end
 
+        if DeadBro.configuration.skip_tracking?
+          client.post_heartbeat if DeadBro.configuration.heartbeat_due?
+          drain_request_tracking
+          next
+        end
+
         # Skip excluded controllers or controller#action pairs
         # Also check exclusive_controller_actions - if defined, only track those
         notification = data.is_a?(Hash) ? data : {}

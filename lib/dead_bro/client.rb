@@ -15,6 +15,7 @@ module DeadBro
     def post_metric(event_name:, payload:, force: false)
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
+      return if @configuration.skip_tracking?
       return if !force && !@configuration.should_sample?
       return if circuit_open?
 
@@ -50,6 +51,7 @@ module DeadBro
     def post_monitor_stats(payload)
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
+      return if @configuration.skip_tracking?
       return unless @configuration.job_queue_monitoring_enabled
       return if circuit_open?
 
@@ -139,6 +141,12 @@ module DeadBro
           if response.is_a?(Net::HTTPSuccess) && event_name == "heartbeat"
             @configuration.last_heartbeat_at = Time.now.utc
           end
+        end
+
+        if response.is_a?(Net::HTTPSuccess)
+          @configuration.skip_until = nil
+        elsif response.is_a?(Net::HTTPInsufficientStorage)
+          @configuration.skip_until = Time.now.utc + DeadBro::Configuration::METRICS_BACKEND_SKIP_AFTER_507_SECONDS
         end
       elsif @circuit_breaker && @configuration.circuit_breaker_enabled
         @circuit_breaker.record_failure

@@ -22,6 +22,10 @@ module DeadBro
     # Tracks when we last received settings from the backend (in-memory only)
     attr_accessor :settings_received_at
 
+    # After HTTP 507 Insufficient Storage from the API, skip all tracking until this
+    # UTC time (in-memory only). Cleared on the next successful API response.
+    attr_accessor :skip_until
+
     # Last successful heartbeat HTTP response time while disabled (in-memory only)
     attr_accessor :last_heartbeat_at
 
@@ -29,6 +33,8 @@ module DeadBro
     attr_accessor :last_heartbeat_attempt_at
 
     HEARTBEAT_INTERVAL = 60 # seconds
+
+    METRICS_BACKEND_SKIP_AFTER_507_SECONDS = 600 # 10 minutes
 
     # First non-empty ENV value wins for release/revision payloads and deploy grouping on the server.
     # Order is roughly: DeadBro-native → common CI/hosting → observability tooling.
@@ -87,6 +93,7 @@ module DeadBro
       @enable_system_stats = false
 
       @settings_received_at = nil
+      @skip_until = nil
       @last_heartbeat_at = nil
       @last_heartbeat_attempt_at = nil
       @settings_mutex = Mutex.new
@@ -150,6 +157,13 @@ module DeadBro
     def heartbeat_due?
       return false if api_key.nil?
       last_heartbeat_attempt_at.nil? || (Time.now.utc - last_heartbeat_attempt_at) >= HEARTBEAT_INTERVAL
+    end
+
+    def skip_tracking?
+      t = skip_until
+      return false unless t
+
+      Time.now.utc < t
     end
 
     def resolve_deploy_id
