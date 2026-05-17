@@ -30,6 +30,25 @@ end
 
 That is enough to start shipping metrics. Create or copy the key from your DeadBro account, then wire it into `DEAD_BRO_API_KEY` (or assign `config.api_key` directly).
 
+### Deploy / release tracking (ECS, Kubernetes, autoscaling groups)
+
+DeadBro sends a **`revision`** string on every payload so charts and deploys group metrics by release. If you do **not** configure a stable value, the gem generates a UUID **once per Ruby process**. With multiple containers or EC2 instances, each replica then looks like a separate deployment.
+
+**Use one shared identifier for every task in the same rollout**, for example:
+
+- Set `DEAD_BRO_DEPLOY_ID` (or `dead_bro_DEPLOY_ID`) in the task definition / pod spec to your **git SHA**, **image digest**, or CD **release id** injected at build or deploy time.
+- Or set it in Ruby (this wins over environment variables when non-blank):
+
+```ruby
+DeadBro.configure do |config|
+  config.deploy_id = ENV.fetch("GIT_SHA") { raise "Set GIT_SHA in the task definition" }
+end
+```
+
+The gem also checks these environment variables in order (first non-empty wins): `DEAD_BRO_DEPLOY_ID`, `dead_bro_DEPLOY_ID`, `GIT_REV`, `GIT_COMMIT`, `GIT_COMMIT_SHA`, `GIT_SHA`, `CODEBUILD_RESOLVED_SOURCE_REVISION`, `HEROKU_SLUG_COMMIT`, `RENDER_GIT_COMMIT`, `DD_VERSION`, `APP_REVISION`, `RELEASE_VERSION`, `SOURCE_VERSION`.
+
+For **Amazon ECS**, add one of these variables in your task definition from CodeBuild, GitHub Actions, or your pipeline so all tasks in the service share the same value for that image version.
+
 ### Dashboard configuration
 
 Use the DeadBro UI to turn features on or off, set sample rates, define controller/job inclusions and exclusions, tune slow-query EXPLAIN, enable queue and system metrics, and adjust related limits. After you deploy the initializer above, those choices take effect when the gem receives them from the API (typically on the next successful metric or heartbeat response).

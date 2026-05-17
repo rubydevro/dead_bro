@@ -39,6 +39,12 @@ RSpec.describe DeadBro::Client, "#post_monitor_stats" do
     client.post_monitor_stats({jobs: []})
   end
 
+  it "skips request when skip_tracking? is active" do
+    config.skip_until = Time.now.utc + 3600
+    expect(Net::HTTP).not_to receive(:new)
+    client.post_monitor_stats({jobs: []})
+  end
+
   it "skips request when job_queue_monitoring_enabled is false" do
     config.job_queue_monitoring_enabled = false
     expect(Net::HTTP).not_to receive(:new)

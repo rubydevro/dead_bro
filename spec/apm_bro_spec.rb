@@ -107,6 +107,23 @@ RSpec.describe DeadBro do
       ENV.delete("HEROKU_SLUG_COMMIT")
     end
 
+    it "prefers config.deploy_id over environment variables when set" do
+      config = DeadBro::Configuration.new
+      ENV["DEAD_BRO_DEPLOY_ID"] = "from-env"
+      ENV["GIT_REV"] = "from-git"
+      config.deploy_id = "from-ruby"
+      expect(config.resolve_deploy_id).to eq("from-ruby")
+      ENV.delete("DEAD_BRO_DEPLOY_ID")
+      ENV.delete("GIT_REV")
+    end
+
+    it "resolves deploy_id from GIT_COMMIT_SHA when higher-priority vars are absent" do
+      config = DeadBro::Configuration.new
+      ENV["GIT_COMMIT_SHA"] = "sha-deadbeef"
+      expect(config.resolve_deploy_id).to eq("sha-deadbeef")
+      ENV.delete("GIT_COMMIT_SHA")
+    end
+
     it "has memory tracking configuration" do
       config = DeadBro::Configuration.new
       expect(config.memory_tracking_enabled).to be true
@@ -351,6 +368,62 @@ RSpec.describe DeadBro do
 
       client.post_heartbeat
       expect(config.last_heartbeat_at).to be_nil
+    end
+
+    it "arms skip_until until ~10 minutes after HTTP 507" do
+      http_double = double("Net::HTTP")
+      uri_double = double("URI", host: "example.com", port: 443, scheme: "https", request_uri: "/apm/v1/metrics")
+      allow(URI).to receive(:parse).and_return(uri_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(http_double).to receive(:use_ssl=)
+      allow(http_double).to receive(:open_timeout=)
+      allow(http_double).to receive(:read_timeout=)
+
+      insuff = Net::HTTPInsufficientStorage.new("1.1", "507", "Insufficient Storage")
+      insuff.instance_variable_set(:@read, true)
+      insuff.instance_variable_set(:@body, "{}")
+      allow(http_double).to receive(:request).and_return(insuff)
+
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, join: nil)
+      end
+
+      client.post_metric(event_name: "test", payload: {})
+      skew = DeadBro::Configuration::METRICS_BACKEND_SKIP_AFTER_507_SECONDS
+      expect(config.skip_until).to be_within(3).of(Time.now.utc + skew)
+    end
+
+    it "clears skip_until after a successful response" do
+      config.skip_until = Time.utc(2025, 9, 1, 13, 0, 0)
+
+      http_double = double("Net::HTTP")
+      uri_double = double("URI", host: "example.com", port: 443, scheme: "https", request_uri: "/apm/v1/metrics")
+      allow(URI).to receive(:parse).and_return(uri_double)
+      allow(Net::HTTP).to receive(:new).and_return(http_double)
+      allow(http_double).to receive(:use_ssl=)
+      allow(http_double).to receive(:open_timeout=)
+      allow(http_double).to receive(:read_timeout=)
+
+      success = double("Response", body: "{}")
+      allow(success).to receive(:is_a?) { |klass| klass == Net::HTTPSuccess }
+      allow(http_double).to receive(:request).and_return(success)
+
+      allow(Thread).to receive(:new) do |&block|
+        block.call
+        instance_double(Thread, join: nil)
+      end
+
+      client.post_metric(event_name: "test", payload: {})
+      expect(config.skip_until).to be_nil
+    end
+
+    it "does not send metrics while skip_tracking? is active" do
+      config.skip_until = Time.now.utc + 3600
+
+      expect(Net::HTTP).not_to receive(:new)
+
+      client.post_metric(event_name: "test", payload: {})
     end
   end
 
@@ -716,6 +789,25 @@ RSpec.describe DeadBro do
       config.api_key = "some-key"
       config.last_heartbeat_attempt_at = Time.now.utc - DeadBro::Configuration::HEARTBEAT_INTERVAL
       expect(config.heartbeat_due?).to be true
+    end
+  end
+
+  describe "Configuration#skip_tracking?" do
+    let(:config) { DeadBro::Configuration.new }
+
+    it "returns false when skip_until is nil" do
+      config.skip_until = nil
+      expect(config.skip_tracking?).to be false
+    end
+
+    it "returns true when skip_until is in the future" do
+      config.skip_until = Time.now.utc + 60
+      expect(config.skip_tracking?).to be true
+    end
+
+    it "returns false when skip_until is in the past" do
+      config.skip_until = Time.now.utc - 1
+      expect(config.skip_tracking?).to be false
     end
   end
 

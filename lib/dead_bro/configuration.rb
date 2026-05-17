@@ -7,7 +7,7 @@ module DeadBro
     # returns it in a response; local configure() values apply until the next remote update.
     attr_accessor :api_key, :open_timeout, :read_timeout, :enabled, :ruby_dev,
       :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
-      :circuit_breaker_retry_timeout, :deploy_id, :disk_paths, :interfaces_ignore
+      :circuit_breaker_retry_timeout, :disk_paths, :interfaces_ignore
 
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled,
@@ -22,6 +22,10 @@ module DeadBro
     # Tracks when we last received settings from the backend (in-memory only)
     attr_accessor :settings_received_at
 
+    # After HTTP 507 Insufficient Storage from the API, skip all tracking until this
+    # UTC time (in-memory only). Cleared on the next successful API response.
+    attr_accessor :skip_until
+
     # Last successful heartbeat HTTP response time while disabled (in-memory only)
     attr_accessor :last_heartbeat_at
 
@@ -29,6 +33,26 @@ module DeadBro
     attr_accessor :last_heartbeat_attempt_at
 
     HEARTBEAT_INTERVAL = 60 # seconds
+
+    METRICS_BACKEND_SKIP_AFTER_507_SECONDS = 600 # 10 minutes
+
+    # First non-empty ENV value wins for release/revision payloads and deploy grouping on the server.
+    # Order is roughly: DeadBro-native → common CI/hosting → observability tooling.
+    DEPLOY_REVISION_ENV_KEYS = %w[
+      DEAD_BRO_DEPLOY_ID
+      dead_bro_DEPLOY_ID
+      GIT_REV
+      GIT_COMMIT
+      GIT_COMMIT_SHA
+      GIT_SHA
+      CODEBUILD_RESOLVED_SOURCE_REVISION
+      HEROKU_SLUG_COMMIT
+      RENDER_GIT_COMMIT
+      DD_VERSION
+      APP_REVISION
+      RELEASE_VERSION
+      SOURCE_VERSION
+    ].freeze
 
     REMOTE_SETTING_KEYS = %w[
       enabled sample_rate memory_tracking_enabled allocation_tracking_enabled
@@ -47,7 +71,7 @@ module DeadBro
       @circuit_breaker_failure_threshold = 3
       @circuit_breaker_recovery_timeout = 60
       @circuit_breaker_retry_timeout = 300
-      @deploy_id = resolve_deploy_id
+      @explicit_deploy_revision = nil
       @disk_paths = ["/"]
       @interfaces_ignore = %w[lo lo0 docker0]
 
@@ -69,9 +93,21 @@ module DeadBro
       @enable_system_stats = false
 
       @settings_received_at = nil
+      @skip_until = nil
       @last_heartbeat_at = nil
       @last_heartbeat_attempt_at = nil
       @settings_mutex = Mutex.new
+    end
+
+    # Current release revision sent as `revision` on all API payloads — same semantics as `#resolve_deploy_id`.
+    def deploy_id
+      resolve_deploy_id
+    end
+
+    # Overrides ENV-based resolution when set to a non-empty string (or clears override when nil/blank).
+    def deploy_id=(value)
+      s = value&.respond_to?(:to_s) ? value.to_s.strip : ""
+      @explicit_deploy_revision = s.empty? ? nil : s
     end
 
     def excluded_controllers=(value)
@@ -123,8 +159,28 @@ module DeadBro
       last_heartbeat_attempt_at.nil? || (Time.now.utc - last_heartbeat_attempt_at) >= HEARTBEAT_INTERVAL
     end
 
+    def skip_tracking?
+      t = skip_until
+      return false unless t
+
+      Time.now.utc < t
+    end
+
     def resolve_deploy_id
-      ENV["dead_bro_DEPLOY_ID"] || ENV["GIT_REV"] || ENV["HEROKU_SLUG_COMMIT"] || DeadBro.process_deploy_id
+      explicit = @explicit_deploy_revision&.to_s&.strip
+      return explicit unless explicit.nil? || explicit.empty?
+
+      DEPLOY_REVISION_ENV_KEYS.each do |key|
+        v = ENV[key]
+        next unless v.respond_to?(:to_s)
+
+        stripped = v.to_s.strip
+        next if stripped.empty?
+
+        return stripped
+      end
+
+      DeadBro.process_deploy_id
     end
 
     def excluded_controller?(controller_name, action_name = nil)

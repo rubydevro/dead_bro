@@ -15,6 +15,11 @@ module DeadBro
       # Track job execution
       ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
+          if DeadBro.configuration.skip_tracking?
+            drain_job_tracking
+            next
+          end
+
           job_class_name = data[:job].class.name
           if DeadBro.configuration.excluded_job?(job_class_name)
             drain_job_tracking
@@ -106,6 +111,11 @@ module DeadBro
       # Track job exceptions
       ActiveSupport::Notifications.subscribe(JOB_EXCEPTION_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
+          if DeadBro.configuration.skip_tracking?
+            drain_job_tracking
+            next
+          end
+
           job_class_name = data[:job].class.name
           if DeadBro.configuration.excluded_job?(job_class_name)
             next

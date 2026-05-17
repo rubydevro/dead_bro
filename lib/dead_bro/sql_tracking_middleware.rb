@@ -7,6 +7,8 @@ module DeadBro
     end
 
     def call(env)
+      return @app.call(env) if DeadBro.configuration.skip_tracking?
+
       # Clear logs for this request
       DeadBro.logger.clear
 
