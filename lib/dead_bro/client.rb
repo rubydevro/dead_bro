@@ -19,7 +19,7 @@ module DeadBro
       return if circuit_open?
 
       payload = truncate_payload_for_request(payload)
-      body = {event: event_name, payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id}
+      body = {event: event_name, payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
 
       dispatch_request(
         url: metrics_endpoint_url,
@@ -35,7 +35,7 @@ module DeadBro
       return if @configuration.api_key.nil?
 
       @configuration.last_heartbeat_attempt_at = Time.now.utc
-      body = {event: "heartbeat", payload: {}, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id}
+      body = {event: "heartbeat", payload: {}, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
 
       dispatch_request(
         url: metrics_endpoint_url,
@@ -53,7 +53,7 @@ module DeadBro
       return unless @configuration.job_queue_monitoring_enabled
       return if circuit_open?
 
-      body = {payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id}
+      body = {payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
 
       dispatch_request(
         url: monitor_endpoint_url,
