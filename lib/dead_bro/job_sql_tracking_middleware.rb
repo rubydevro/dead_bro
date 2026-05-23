@@ -24,6 +24,11 @@ module DeadBro
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
           DeadBro::MemoryTrackingSubscriber.start_request_tracking
         end
+
+        # Start DB connection pool wait tracking
+        if defined?(DeadBro::DbConnectionSubscriber)
+          DeadBro::DbConnectionSubscriber.start_request_tracking
+        end
       end
     rescue
       # Never raise from instrumentation install

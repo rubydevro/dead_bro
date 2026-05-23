@@ -49,6 +49,11 @@ module DeadBro
         end
 
         duration_ms = ((finished - started) * 1000.0).round(2)
+
+        # Time spent in Rack middleware before ActionController took over (routing, session, auth, etc.)
+        rack_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+        rack_duration_ms = rack_start ? ([((started - rack_start) * 1000.0), 0].max).round(2) : nil
+
         # Stop SQL tracking and get collected queries (this was started by the request)
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
 
@@ -56,6 +61,9 @@ module DeadBro
         cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
         redis_events = defined?(DeadBro::RedisSubscriber) ? DeadBro::RedisSubscriber.stop_request_tracking : []
         elasticsearch_events = defined?(DeadBro::ElasticsearchSubscriber) ? DeadBro::ElasticsearchSubscriber.stop_request_tracking : []
+
+        # Stop DB connection pool wait tracking
+        db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
 
         # Stop view rendering tracking and get collected view events
         view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
@@ -166,6 +174,10 @@ module DeadBro
           view_performance: view_performance,
           memory_events: memory_events,
           memory_performance: memory_performance,
+          rack_duration_ms: rack_duration_ms,
+          queue_duration_ms: Thread.current[:dead_bro_queue_duration_ms],
+          db_connection_wait_ms: db_connection_stats[:wait_ms],
+          db_connection_checkouts: db_connection_stats[:checkouts],
           logs: DeadBro.logger.logs
         }
         client.post_metric(event_name: name, payload: payload)
@@ -186,6 +198,7 @@ module DeadBro
         DeadBro::MemoryTrackingSubscriber.stop_request_tracking
       end
       Thread.current[:dead_bro_http_events] = nil
+      DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
     rescue
       # Best effort — draining must never raise from the notifications callback.
     end

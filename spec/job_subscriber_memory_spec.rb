@@ -43,6 +43,7 @@ RSpec.describe DeadBro::JobSubscriber, "memory tracking fallback" do
     allow(job).to receive(:job_id).and_return("abc-123")
     allow(job).to receive(:queue_name).and_return("default")
     allow(job).to receive(:arguments).and_return([])
+    allow(job).to receive(:enqueued_at).and_return(nil)
     job
   end
 

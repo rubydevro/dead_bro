@@ -9,6 +9,15 @@ module DeadBro
     def call(env)
       return @app.call(env) if DeadBro.configuration.skip_tracking?
 
+      # Capture rack entry time before any setup so middleware overhead is accurately measured.
+      rack_entry = Time.now
+      Thread.current[DeadBro::TRACKING_START_TIME_KEY] = rack_entry
+
+      # Queue time: gap between when the upstream proxy accepted the connection and when a Rack
+      # worker picked it up. Heroku sets X-Request-Start as "t=<microseconds>"; nginx typically
+      # uses "t=<seconds.ms>". Both are parsed below.
+      Thread.current[:dead_bro_queue_duration_ms] = parse_queue_start(env, rack_entry)
+
       # Clear logs for this request
       DeadBro.logger.clear
 
@@ -47,11 +56,13 @@ module DeadBro
         DeadBro::ElasticsearchSubscriber.start_request_tracking
       end
 
+      # Start DB connection pool wait tracking
+      if defined?(DeadBro::DbConnectionSubscriber)
+        DeadBro::DbConnectionSubscriber.start_request_tracking
+      end
+
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
-
-      # Set tracking start time once for all subscribers (before starting any tracking)
-      Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
 
       @app.call(env)
     ensure
@@ -81,10 +92,40 @@ module DeadBro
         Thread.current[:dead_bro_lightweight_memory] = nil
       end
 
-      # Clean up HTTP events, ES events, and tracking start time
+      # Clean up HTTP events, ES events, DB connection tracking, and tracking start time
       Thread.current[:dead_bro_elasticsearch_events] = nil
       Thread.current[:dead_bro_http_events] = nil
+      Thread.current[:dead_bro_queue_duration_ms] = nil
+      DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
+    end
+
+    private
+
+    def parse_queue_start(env, rack_entry)
+      raw = env["HTTP_X_REQUEST_START"] || env["HTTP_X_QUEUE_START"]
+      return nil if raw.nil? || raw.empty?
+
+      # Strip "t=" prefix used by Heroku and nginx
+      raw = raw.sub(/\At=/, "")
+      num = raw.to_f
+      return nil if num <= 0
+
+      request_start =
+        if num > 1_000_000_000_000_000 # microseconds (Heroku)
+          Time.at(num / 1_000_000.0)
+        elsif num > 1_000_000_000_000 # milliseconds
+          Time.at(num / 1_000.0)
+        else # seconds (nginx)
+          Time.at(num)
+        end
+
+      # Guard against clocks being out of sync or wildly misconfigured proxy timestamps.
+      # Cap at 60 s — anything larger almost certainly means the header value is wrong.
+      diff_ms = ((rack_entry - request_start) * 1000.0).round(2)
+      diff_ms >= 0 && diff_ms <= 60_000 ? diff_ms : nil
+    rescue
+      nil
     end
   end
 end

@@ -43,6 +43,7 @@ module DeadBro
         end
 
         duration_ms = ((finished - started) * 1000.0).round(2)
+        queue_duration_ms = job_queue_duration_ms(data[:job], started)
 
         # Ensure tracking was started (fallback if perform_start.active_job didn't fire)
         # This handles job backends that don't emit perform_start events
@@ -50,6 +51,7 @@ module DeadBro
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
+          DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
           if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
             DeadBro::MemoryTrackingSubscriber.start_request_tracking
           else
@@ -59,6 +61,7 @@ module DeadBro
 
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
+        db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
 
         # Stop memory tracking and get collected memory data
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
@@ -94,6 +97,9 @@ module DeadBro
           queue_name: data[:job].queue_name,
           arguments: safe_arguments(data[:job].arguments),
           duration_ms: duration_ms,
+          queue_duration_ms: queue_duration_ms,
+          db_connection_wait_ms: db_connection_stats[:wait_ms],
+          db_connection_checkouts: db_connection_stats[:checkouts],
           status: "completed",
           sql_queries: sql_queries,
           rails_env: DeadBro.env,
@@ -129,13 +135,14 @@ module DeadBro
 
         duration_ms = ((finished - started) * 1000.0).round(2)
         exception = data[:exception_object]
-        data[:job].class.name
+        queue_duration_ms = job_queue_duration_ms(data[:job], started)
 
         # Ensure tracking was started (fallback if perform_start.active_job didn't fire)
         unless DeadBro::SqlSubscriber.tracking_active?
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
+          DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
           if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
             DeadBro::MemoryTrackingSubscriber.start_request_tracking
           else
@@ -145,6 +152,7 @@ module DeadBro
 
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
+        db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
 
         # Stop memory tracking and get collected memory data
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
@@ -180,6 +188,9 @@ module DeadBro
           queue_name: data[:job].queue_name,
           arguments: safe_arguments(data[:job].arguments),
           duration_ms: duration_ms,
+          queue_duration_ms: queue_duration_ms,
+          db_connection_wait_ms: db_connection_stats[:wait_ms],
+          db_connection_checkouts: db_connection_stats[:checkouts],
           status: "failed",
           sql_queries: sql_queries,
           exception_class: exception&.class&.name,
@@ -205,6 +216,7 @@ module DeadBro
     # build a payload (excluded job / sampled out). Matches Subscriber.drain_request_tracking.
     def self.drain_job_tracking
       DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
+      DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       DeadBro::LightweightMemoryTracker.stop_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
       if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
         DeadBro::MemoryTrackingSubscriber.stop_request_tracking
@@ -214,6 +226,17 @@ module DeadBro
     end
 
     private
+
+    def self.job_queue_duration_ms(job, perform_started)
+      enqueued_at = job.enqueued_at
+      return nil if enqueued_at.nil?
+
+      enqueued_time = enqueued_at.is_a?(Time) ? enqueued_at : Time.parse(enqueued_at.to_s)
+      diff_ms = ((perform_started - enqueued_time) * 1000.0).round(2)
+      diff_ms >= 0 ? diff_ms : nil
+    rescue
+      nil
+    end
 
     def self.safe_arguments(arguments)
       return [] unless arguments.is_a?(Array)
