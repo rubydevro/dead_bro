@@ -11,13 +11,16 @@ module DeadBro
       def checkout(*args)
         return super unless Thread.current[DbConnectionSubscriber::WAIT_KEY].is_a?(Numeric)
 
+        # Initialize conn before calling super so the rescue block can tell whether
+        # checkout succeeded before timing code raised (avoids double-checkout).
+        conn = nil
         t0   = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         conn = super
         Thread.current[DbConnectionSubscriber::WAIT_KEY]  += (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000.0
         Thread.current[DbConnectionSubscriber::COUNT_KEY] += 1
         conn
       rescue
-        super
+        conn || super
       end
     end
 
@@ -26,7 +29,8 @@ module DeadBro
       return if ActiveRecord::ConnectionAdapters::ConnectionPool.ancestors.include?(CheckoutInstrumentation)
 
       ActiveRecord::ConnectionAdapters::ConnectionPool.prepend(CheckoutInstrumentation)
-    rescue
+    rescue StandardError => e
+      warn "[DeadBro] DbConnectionSubscriber install failed: #{e.class}: #{e.message}"
     end
 
     def self.start_request_tracking

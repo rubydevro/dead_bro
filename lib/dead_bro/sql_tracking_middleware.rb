@@ -96,8 +96,7 @@ module DeadBro
       Thread.current[:dead_bro_elasticsearch_events] = nil
       Thread.current[:dead_bro_http_events] = nil
       Thread.current[:dead_bro_queue_duration_ms] = nil
-      Thread.current[DeadBro::DbConnectionSubscriber::WAIT_KEY]  = nil if defined?(DeadBro::DbConnectionSubscriber)
-      Thread.current[DeadBro::DbConnectionSubscriber::COUNT_KEY] = nil if defined?(DeadBro::DbConnectionSubscriber)
+      DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end
 
@@ -121,9 +120,10 @@ module DeadBro
           Time.at(num)
         end
 
-      # Guard against clocks being out of sync
+      # Guard against clocks being out of sync or wildly misconfigured proxy timestamps.
+      # Cap at 60 s — anything larger almost certainly means the header value is wrong.
       diff_ms = ((rack_entry - request_start) * 1000.0).round(2)
-      diff_ms >= 0 ? diff_ms : nil
+      diff_ms >= 0 && diff_ms <= 60_000 ? diff_ms : nil
     rescue
       nil
     end
