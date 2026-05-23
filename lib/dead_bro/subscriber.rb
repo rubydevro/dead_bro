@@ -65,6 +65,9 @@ module DeadBro
         # Stop DB connection pool wait tracking
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
 
+        # Stop GC pressure tracking — diff minor/major runs, objects allocated, GC time
+        gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
+
         # Stop view rendering tracking and get collected view events
         view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
         view_performance = DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
@@ -178,6 +181,7 @@ module DeadBro
           queue_duration_ms: Thread.current[:dead_bro_queue_duration_ms],
           db_connection_wait_ms: db_connection_stats[:wait_ms],
           db_connection_checkouts: db_connection_stats[:checkouts],
+          gc_pressure: gc_pressure,
           logs: DeadBro.logger.logs
         }
         client.post_metric(event_name: name, payload: payload)
@@ -199,6 +203,7 @@ module DeadBro
       end
       Thread.current[:dead_bro_http_events] = nil
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+      DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
     rescue
       # Best effort — draining must never raise from the notifications callback.
     end
