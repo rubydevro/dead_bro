@@ -36,6 +36,10 @@ if defined?(Rails) && defined?(Rails::Railtie)
           require "dead_bro/elasticsearch_subscriber"
           DeadBro::ElasticsearchSubscriber.subscribe!
 
+          # Install DB connection pool wait tracking
+          require "dead_bro/db_connection_subscriber"
+          DeadBro::DbConnectionSubscriber.install!
+
           # Install view rendering tracking
           require "dead_bro/view_rendering_subscriber"
           DeadBro::ViewRenderingSubscriber.subscribe!(client: shared_client)
