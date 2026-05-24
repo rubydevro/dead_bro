@@ -10,7 +10,7 @@ module DeadBro
 
     def self.stop_request_tracking
       before = Thread.current[THREAD_KEY]
-      return {} unless before&.any?
+      return {} if before.nil? || before.empty?
       diff(before, snapshot)
     ensure
       Thread.current[THREAD_KEY] = nil
@@ -23,7 +23,6 @@ module DeadBro
         minor_gc_count: stat[:minor_gc_count] || 0,
         major_gc_count: stat[:major_gc_count] || 0,
         total_allocated_objects: stat[:total_allocated_objects] || 0,
-        heap_live_slots: stat[:heap_live_slots] || 0,
         gc_time_ns: GC.respond_to?(:total_time) ? GC.total_time : nil
       }
     rescue
@@ -39,7 +38,6 @@ module DeadBro
         minor_gc_runs: (after[:minor_gc_count] || 0) - (before[:minor_gc_count] || 0),
         major_gc_runs: (after[:major_gc_count] || 0) - (before[:major_gc_count] || 0),
         allocated_objects: (after[:total_allocated_objects] || 0) - (before[:total_allocated_objects] || 0),
-        heap_live_slots_delta: (after[:heap_live_slots] || 0) - (before[:heap_live_slots] || 0),
         gc_time_ms: gc_time_ms
       }
     rescue
