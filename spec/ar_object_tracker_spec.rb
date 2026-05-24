@@ -67,5 +67,11 @@ RSpec.describe DeadBro::ArObjectTracker do
         ActiveSupport::Notifications.instrument("instantiation.active_record", record_count: 99)
       }.not_to raise_error
     end
+
+    it "does not install a second listener when subscribe! is called again" do
+      # @subscribed is already true from before(:context); a second call must be a no-op
+      expect(ActiveSupport::Notifications).not_to receive(:subscribe)
+      described_class.subscribe!
+    end
   end
 end

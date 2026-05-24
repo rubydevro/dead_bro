@@ -14,7 +14,7 @@ module DeadBro
         next unless count
         Thread.current[THREAD_KEY] = count + (data[:record_count] || 1).to_i
       end
-    rescue
+    rescue StandardError
       # Never raise from instrumentation install
     end
 

@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-## [0.2.15] - 2026-05-24
+## [0.2.16] - 2026-05-24
 
 ### Added
 - `ArObjectTracker`: subscribes to Rails' built-in `instantiation.active_record` notification to count the total number of ActiveRecord model instances hydrated during each request or background job. The count is reported as `ar_instantiation_count` in every payload. Uses a thread-local counter with an idempotent `subscribe!` guard, matching the same start/stop lifecycle as `GcTracker`. No monkey-patching required — Rails emits this event natively with a `record_count` field that accumulates correctly across batch loads.

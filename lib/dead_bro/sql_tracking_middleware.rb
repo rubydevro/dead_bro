@@ -104,6 +104,7 @@ module DeadBro
       Thread.current[:dead_bro_queue_duration_ms] = nil
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       Thread.current[DeadBro::GcTracker::THREAD_KEY] = nil if defined?(DeadBro::GcTracker)
+      # Bypass stop_request_tracking intentionally — cleanup only, no return value needed here.
       Thread.current[DeadBro::ArObjectTracker::THREAD_KEY] = nil if defined?(DeadBro::ArObjectTracker)
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end
