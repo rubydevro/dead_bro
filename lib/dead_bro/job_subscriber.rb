@@ -12,6 +12,12 @@ module DeadBro
     JOB_EXCEPTION_EVENT_NAME = "exception.active_job"
 
     def self.subscribe!(client: Client.new)
+      # Snap GC state before the job runs so stop_request_tracking gets a valid diff
+      ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, _data|
+        DeadBro::GcTracker.start_request_tracking if defined?(DeadBro::GcTracker)
+      rescue
+      end
+
       # Track job execution
       ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
@@ -62,6 +68,7 @@ module DeadBro
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
+        gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
 
         # Stop memory tracking and get collected memory data
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
@@ -100,6 +107,7 @@ module DeadBro
           queue_duration_ms: queue_duration_ms,
           db_connection_wait_ms: db_connection_stats[:wait_ms],
           db_connection_checkouts: db_connection_stats[:checkouts],
+          gc_pressure: gc_pressure,
           status: "completed",
           sql_queries: sql_queries,
           rails_env: DeadBro.env,
@@ -153,6 +161,7 @@ module DeadBro
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
+        gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
 
         # Stop memory tracking and get collected memory data
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
@@ -191,6 +200,7 @@ module DeadBro
           queue_duration_ms: queue_duration_ms,
           db_connection_wait_ms: db_connection_stats[:wait_ms],
           db_connection_checkouts: db_connection_stats[:checkouts],
+          gc_pressure: gc_pressure,
           status: "failed",
           sql_queries: sql_queries,
           exception_class: exception&.class&.name,
@@ -217,6 +227,7 @@ module DeadBro
     def self.drain_job_tracking
       DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+      DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
       DeadBro::LightweightMemoryTracker.stop_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
       if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
         DeadBro::MemoryTrackingSubscriber.stop_request_tracking
