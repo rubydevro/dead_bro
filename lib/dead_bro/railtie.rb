@@ -40,6 +40,10 @@ if defined?(Rails) && defined?(Rails::Railtie)
           require "dead_bro/db_connection_subscriber"
           DeadBro::DbConnectionSubscriber.install!
 
+          # Install ActiveRecord object instantiation tracking
+          require "dead_bro/ar_object_tracker"
+          DeadBro::ArObjectTracker.subscribe!
+
           # Install view rendering tracking
           require "dead_bro/view_rendering_subscriber"
           DeadBro::ViewRenderingSubscriber.subscribe!(client: shared_client)
