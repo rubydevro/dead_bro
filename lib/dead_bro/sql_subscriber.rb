@@ -14,7 +14,17 @@ module DeadBro
     THREAD_LOCAL_ALLOC_RESULTS_KEY = :dead_bro_sql_alloc_results
     THREAD_LOCAL_BACKTRACE_KEY = :dead_bro_sql_backtraces
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
+    THREAD_LOCAL_CALL_COUNTS_KEY     = :dead_bro_sql_call_counts
+    THREAD_LOCAL_AGGREGATES_KEY      = :dead_bro_sql_aggregates
     MAX_TRACKED_QUERIES = 1000
+
+    # Number of identical queries within one request that triggers N+1 detection.
+    N_PLUS_ONE_THRESHOLD = 5
+
+    NORMALIZE_PARAM_RE   = /\$\d+/.freeze
+    NORMALIZE_NUMERIC_RE = /\b\d+(\.\d+)?\b/.freeze
+    NORMALIZE_IN_RE      = /\bIN\s*\([^)]+\)/i.freeze
+    NORMALIZE_SPACE_RE   = /\s+/.freeze
 
     # Precompiled regexes used by sanitize_sql. Dynamic /.../i literals inside
     # a hot-path method allocate a fresh Regexp on every call — pinning them
@@ -57,6 +67,20 @@ module DeadBro
       true
     end
 
+    def self.normalize_for_n_plus_one(sql)
+      return "" unless sql.is_a?(String)
+      s = sql.dup
+      s.gsub!(NORMALIZE_PARAM_RE, "?")
+      s.gsub!(NORMALIZE_NUMERIC_RE, "?")
+      s.gsub!(NORMALIZE_IN_RE, "IN (?)")
+      s.gsub!(NORMALIZE_SPACE_RE, " ")
+      s.strip!
+      s.downcase!
+      s
+    rescue
+      sql.to_s.downcase
+    end
+
     def self.subscribe!
       # Subscribe with a start/finish listener to measure allocations per query
       if ActiveSupport::Notifications.notifier.respond_to?(:subscribe)
@@ -82,19 +106,31 @@ module DeadBro
         duration_ms = ((finished - started) * 1000.0).round(2)
         original_sql = data[:sql]
 
-        # Only capture a backtrace for queries we actually care about tracing
-        # (slow). This skips the ~O(stack-depth) allocation on the 99% of queries
-        # that are fast. An N+1 of 100 x 1ms queries no longer eats a thousand
-        # frame allocations for traces nobody will read.
         threshold = begin
           DeadBro.configuration.slow_query_threshold_ms
         rescue
           500
         end
+        sanitized_sql  = sanitize_sql(original_sql)
         captured_trace = (duration_ms >= threshold.to_f) ? capture_app_backtrace : []
 
+        cc_stack     = Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]
+        agg_stack    = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
+        call_counts  = cc_stack.is_a?(Array)  ? cc_stack.last  : nil
+        aggregates_h = agg_stack.is_a?(Array) ? agg_stack.last : nil
+        normalized_key = nil
+
+        if call_counts && aggregates_h
+          normalized_key = normalize_for_n_plus_one(sanitized_sql)
+          call_counts[normalized_key] = (call_counts[normalized_key] || 0) + 1
+          # Capture backtrace exactly at the N+1 boundary — the stack is still meaningful here.
+          if call_counts[normalized_key] == N_PLUS_ONE_THRESHOLD && captured_trace.empty?
+            captured_trace = capture_app_backtrace
+          end
+        end
+
         query_info = {
-          sql: sanitize_sql(original_sql),
+          sql: sanitized_sql,
           name: data[:name],
           duration_ms: duration_ms,
           cached: data[:cached] || false,
@@ -103,16 +139,40 @@ module DeadBro
           allocations: allocations
         }
 
-        # Run EXPLAIN ANALYZE for slow queries in the background
         if should_explain_query?(duration_ms, original_sql)
-          # Store reference to query_info so we can update it when EXPLAIN completes
-          query_info[:explain_plan] = nil # Placeholder
-          # Capture binds if available (type_casted_binds is preferred as they are ready for quoting)
+          query_info[:explain_plan] = nil
           binds = data[:type_casted_binds] || data[:binds]
           start_explain_analyze_background(original_sql, data[:connection_id], query_info, binds)
         end
 
-        # Add to current context (top of stack), but only if we haven't exceeded the limits
+        if aggregates_h && normalized_key
+          call_count = call_counts[normalized_key]
+          if (agg = aggregates_h[normalized_key])
+            agg[:count]             += 1
+            agg[:total_duration_ms]  = (agg[:total_duration_ms] + duration_ms).round(2)
+            agg[:max_duration_ms]    = [agg[:max_duration_ms], duration_ms].max
+            agg[:min_duration_ms]    = [agg[:min_duration_ms], duration_ms].min
+            agg[:total_allocations] += (allocations || 0)
+            agg[:cached_count]      += 1 if query_info[:cached]
+            agg[:n_plus_one]         = true if call_count >= N_PLUS_ONE_THRESHOLD
+            agg[:backtrace]          = captured_trace if agg[:backtrace].empty? && !captured_trace.empty?
+          else
+            aggregates_h[normalized_key] = {
+              sql:               sanitized_sql,
+              name:              data[:name],
+              count:             1,
+              total_duration_ms: duration_ms,
+              max_duration_ms:   duration_ms,
+              min_duration_ms:   duration_ms,
+              total_allocations: allocations || 0,
+              cached_count:      (data[:cached] ? 1 : 0),
+              n_plus_one:        false,
+              backtrace:         captured_trace,
+              explain_plan:      nil
+            }
+          end
+        end
+
         if should_continue_tracking?(current, MAX_TRACKED_QUERIES)
           current << query_info
         end
@@ -126,25 +186,40 @@ module DeadBro
       Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = {}
       Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = {}
       Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = []
+      (Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] ||= []) << {}
+      (Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  ||= []) << {}
     end
 
     def self.stop_request_tracking
-      # Wait for any pending EXPLAIN ANALYZE queries to complete (with timeout)
-      # This must happen BEFORE we get the queries array reference to ensure
-      # all explain_plan fields are populated
       wait_for_pending_explains(EXPLAIN_WAIT_TIMEOUT_SECONDS)
 
       stack = Thread.current[THREAD_LOCAL_KEY]
-      queries = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
-      # Clear thread locals when stack is empty so "tracking not started" behaves correctly
+      raw_queries = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
+
+      agg_stack    = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
+      aggregates_h = (agg_stack.is_a?(Array) && agg_stack.any?) ? agg_stack.pop : {}
+      cc_stack     = Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]
+      cc_stack.pop if cc_stack.is_a?(Array) && cc_stack.any?
+
+      # Fold any completed EXPLAIN plans from raw queries into their aggregate entry
+      raw_queries.each do |q|
+        next unless q[:explain_plan]
+        key = normalize_for_n_plus_one(q[:sql].to_s)
+        agg = aggregates_h[key]
+        agg[:explain_plan] ||= q[:explain_plan] if agg
+      end
+
       if stack.nil? || stack.empty?
         Thread.current[THREAD_LOCAL_KEY] = nil
         Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = nil
         Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = nil
         Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = nil
         Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
+        Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] = nil
+        Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  = nil
       end
-      queries
+
+      aggregates_h.values.sort_by { |a| -a[:total_duration_ms] }
     end
 
     # Upper bound on pending EXPLAIN threads per request — stops a slow-query

@@ -4,167 +4,147 @@ require "active_support/notifications"
 
 module DeadBro
   class ViewRenderingSubscriber
-    # Rails view rendering events
-    RENDER_TEMPLATE_EVENT = "render_template.action_view"
-    RENDER_PARTIAL_EVENT = "render_partial.action_view"
+    RENDER_TEMPLATE_EVENT  = "render_template.action_view"
+    RENDER_PARTIAL_EVENT   = "render_partial.action_view"
     RENDER_COLLECTION_EVENT = "render_collection.action_view"
 
-    THREAD_LOCAL_KEY = :dead_bro_view_events
-    MAX_TRACKED_EVENTS = 1000
+    THREAD_LOCAL_KEY            = :dead_bro_view_events
+    THREAD_LOCAL_AGGREGATES_KEY = :dead_bro_view_aggregates
+    MAX_TRACKED_EVENTS = 500
 
     def self.subscribe!(client: Client.new)
-      # Track template rendering
-      ActiveSupport::Notifications.subscribe(RENDER_TEMPLATE_EVENT) do |name, started, finished, _unique_id, data|
-        duration_ms = ((finished - started) * 1000.0).round(2)
-
-        view_info = {
-          type: "template",
-          identifier: safe_identifier(data[:identifier]),
-          layout: data[:layout],
-          duration_ms: duration_ms,
-          virtual_path: data[:virtual_path],
-          rendered_at: Time.now.utc.to_i
-        }
-
-        add_view_event(view_info)
+      ActiveSupport::Notifications.subscribe(RENDER_TEMPLATE_EVENT) do |_name, started, finished, _uid, data|
+        add_view_event(type: "template", identifier: safe_identifier(data[:identifier]),
+                       duration_ms: ((finished - started) * 1000.0).round(2),
+                       rendered_at: Time.now.utc.to_i)
       end
 
-      # Track partial rendering
-      ActiveSupport::Notifications.subscribe(RENDER_PARTIAL_EVENT) do |name, started, finished, _unique_id, data|
-        duration_ms = ((finished - started) * 1000.0).round(2)
-
-        view_info = {
-          type: "partial",
-          identifier: safe_identifier(data[:identifier]),
-          layout: data[:layout],
-          duration_ms: duration_ms,
-          virtual_path: data[:virtual_path],
-          cache_key: data[:cache_key],
-          rendered_at: Time.now.utc.to_i
-        }
-
-        add_view_event(view_info)
+      ActiveSupport::Notifications.subscribe(RENDER_PARTIAL_EVENT) do |_name, started, finished, _uid, data|
+        add_view_event(type: "partial", identifier: safe_identifier(data[:identifier]),
+                       duration_ms: ((finished - started) * 1000.0).round(2),
+                       cache_key: data[:cache_key],
+                       rendered_at: Time.now.utc.to_i)
       end
 
-      # Track collection rendering (for partials rendered in loops)
-      ActiveSupport::Notifications.subscribe(RENDER_COLLECTION_EVENT) do |name, started, finished, _unique_id, data|
-        duration_ms = ((finished - started) * 1000.0).round(2)
-
-        view_info = {
-          type: "collection",
-          identifier: safe_identifier(data[:identifier]),
-          layout: data[:layout],
-          duration_ms: duration_ms,
-          virtual_path: data[:virtual_path],
-          cache_key: data[:cache_key],
-          count: data[:count],
-          cached_count: data[:cached_count],
-          rendered_at: Time.now.utc.to_i
-        }
-
-        add_view_event(view_info)
+      ActiveSupport::Notifications.subscribe(RENDER_COLLECTION_EVENT) do |_name, started, finished, _uid, data|
+        add_view_event(type: "collection", identifier: safe_identifier(data[:identifier]),
+                       duration_ms: ((finished - started) * 1000.0).round(2),
+                       collection_count: (data[:count] || 0).to_i,
+                       collection_cached_count: (data[:cached_count] || 0).to_i,
+                       rendered_at: Time.now.utc.to_i)
       end
     rescue
-      # Never raise from instrumentation install
     end
 
     def self.start_request_tracking
-      Thread.current[THREAD_LOCAL_KEY] = []
+      Thread.current[THREAD_LOCAL_KEY]            = true
+      Thread.current[THREAD_LOCAL_AGGREGATES_KEY] = {}
     end
 
     def self.stop_request_tracking
-      events = Thread.current[THREAD_LOCAL_KEY]
       Thread.current[THREAD_LOCAL_KEY] = nil
-      events || []
+      aggregates = Thread.current[THREAD_LOCAL_AGGREGATES_KEY] || {}
+      Thread.current[THREAD_LOCAL_AGGREGATES_KEY] = nil
+      aggregates.values.sort_by { |a| [-a[:count], -a[:total_duration_ms]] }
     end
 
     def self.add_view_event(view_info)
-      if Thread.current[THREAD_LOCAL_KEY] && should_continue_tracking?
-        Thread.current[THREAD_LOCAL_KEY] << view_info
+      return unless Thread.current[THREAD_LOCAL_KEY]
+      aggregates = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
+      return unless aggregates
+
+      key = view_info[:identifier].to_s
+      dur = view_info[:duration_ms].to_f
+      rendered_at = view_info[:rendered_at]
+
+      if (agg = aggregates[key])
+        agg[:count]                   += 1
+        agg[:total_duration_ms]        = (agg[:total_duration_ms] + dur).round(2)
+        agg[:max_duration_ms]          = [agg[:max_duration_ms], dur].max
+        agg[:min_duration_ms]          = [agg[:min_duration_ms], dur].min
+        agg[:rendered_at_min]          = [agg[:rendered_at_min], rendered_at].compact.min if rendered_at
+        agg[:rendered_at_max]          = [agg[:rendered_at_max], rendered_at].compact.max if rendered_at
+        agg[:cache_hit_count]         += 1 if view_info[:cache_key]
+        agg[:collection_count]        += view_info[:collection_count].to_i
+        agg[:collection_cached_count] += view_info[:collection_cached_count].to_i
+      else
+        return if aggregates.size >= MAX_TRACKED_EVENTS
+        aggregates[key] = {
+          identifier:              key,
+          type:                    view_info[:type],
+          count:                   1,
+          total_duration_ms:       dur,
+          max_duration_ms:         dur,
+          min_duration_ms:         dur,
+          rendered_at_min:         rendered_at,
+          rendered_at_max:         rendered_at,
+          cache_hit_count:         (view_info[:cache_key] ? 1 : 0),
+          collection_count:        view_info[:collection_count].to_i,
+          collection_cached_count: view_info[:collection_cached_count].to_i
+        }
       end
-    end
-
-    # Check if we should continue tracking based on count and time limits
-    def self.should_continue_tracking?
-      events = Thread.current[THREAD_LOCAL_KEY]
-      return false unless events
-
-      # Check count limit
-      return false if events.length >= MAX_TRACKED_EVENTS
-
-      # Check time limit
-      start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
-      if start_time
-        elapsed_seconds = Time.now - start_time
-        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
-      end
-
-      true
     end
 
     def self.safe_identifier(identifier)
       return "" unless identifier.is_a?(String)
-
-      # Extract meaningful parts of the file path
-      # e.g., "/app/views/users/show.html.erb" -> "users/show.html.erb"
       identifier.split("/").last(3).join("/")
     rescue
       identifier.to_s
     end
 
-    # Analyze view rendering performance
     def self.analyze_view_performance(view_events)
       return {} if view_events.empty?
 
-      total_duration = view_events.sum { |event| event[:duration_ms] }
+      total_renders  = view_events.sum { |e| e_int(e, :count, 1) }
+      total_duration = view_events.sum { |e| e_flt(e, :total_duration_ms) }
 
-      # Group by view type
-      by_type = view_events.group_by { |event| event[:type] }
+      by_type = Hash.new(0)
+      view_events.each { |e| by_type[e_str(e, :type)] += e_int(e, :count, 1) }
 
-      # Find slowest views
-      slowest_views = view_events.sort_by { |event| -event[:duration_ms] }.first(5)
+      slowest = view_events.sort_by { |e| -e_flt(e, :max_duration_ms) }.first(5).map do |e|
+        { identifier: e_str(e, :identifier), duration_ms: e_flt(e, :max_duration_ms), type: e_str(e, :type) }
+      end
 
-      # Find most frequently rendered views
-      view_frequency = view_events.group_by { |event| event[:identifier] }
-        .transform_values(&:count)
-        .sort_by { |_, count| -count }
-        .first(5)
+      most_frequent = view_events.sort_by { |e| -e_int(e, :count, 1) }.first(5).map do |e|
+        { identifier: e_str(e, :identifier), count: e_int(e, :count, 1) }
+      end
 
-      # Calculate cache hit rates for partials
-      partials = view_events.select { |event| event[:type] == "partial" }
-      cache_hits = partials.count { |event| event[:cache_key] }
-      cache_hit_rate = partials.any? ? (cache_hits.to_f / partials.count * 100).round(2) : 0
+      partials                = view_events.select { |e| e_str(e, :type) == "partial" }
+      total_partial_renders   = partials.sum { |e| e_int(e, :count, 1) }
+      total_cache_hits        = partials.sum { |e| e_int(e, :cache_hit_count) }
+      partial_cache_hit_rate  = total_partial_renders > 0 ? (total_cache_hits.to_f / total_partial_renders * 100).round(2) : 0
 
-      # Collection rendering analysis
-      collections = view_events.select { |event| event[:type] == "collection" }
-      total_collection_items = collections.sum { |event| event[:count] || 0 }
-      total_cached_items = collections.sum { |event| event[:cached_count] || 0 }
-      collection_cache_hit_rate = (total_collection_items > 0) ?
-        (total_cached_items.to_f / total_collection_items * 100).round(2) : 0
+      collections            = view_events.select { |e| e_str(e, :type) == "collection" }
+      total_collection_items = collections.sum { |e| e_int(e, :collection_count) }
+      total_cached_items     = collections.sum { |e| e_int(e, :collection_cached_count) }
+      collection_cache_hit_rate = total_collection_items > 0 ? (total_cached_items.to_f / total_collection_items * 100).round(2) : 0
 
       {
-        total_views_rendered: view_events.count,
-        total_view_duration_ms: total_duration.round(2),
-        average_view_duration_ms: (total_duration / view_events.count).round(2),
-        by_type: by_type.transform_values(&:count),
-        slowest_views: slowest_views.map { |view|
-          {
-            identifier: view[:identifier],
-            duration_ms: view[:duration_ms],
-            type: view[:type]
-          }
-        },
-        most_frequent_views: view_frequency.map { |identifier, count|
-          {
-            identifier: identifier,
-            count: count
-          }
-        },
-        partial_cache_hit_rate: cache_hit_rate,
-        collection_cache_hit_rate: collection_cache_hit_rate,
-        total_collection_items: total_collection_items,
-        total_cached_collection_items: total_cached_items
+        total_views_rendered:           total_renders,
+        total_view_duration_ms:         total_duration.round(2),
+        average_view_duration_ms:       total_renders > 0 ? (total_duration / total_renders).round(2) : 0,
+        by_type:                        by_type,
+        slowest_views:                  slowest,
+        most_frequent_views:            most_frequent,
+        partial_cache_hit_rate:         partial_cache_hit_rate,
+        collection_cache_hit_rate:      collection_cache_hit_rate,
+        total_collection_items:         total_collection_items,
+        total_cached_collection_items:  total_cached_items
       }
+    end
+
+    private
+
+    def self.e_int(e, key, default = 0)
+      (e[key] || e[key.to_s] || default).to_i
+    end
+
+    def self.e_flt(e, key, default = 0.0)
+      (e[key] || e[key.to_s] || default).to_f
+    end
+
+    def self.e_str(e, key, default = "")
+      (e[key] || e[key.to_s] || default).to_s
     end
   end
 end
