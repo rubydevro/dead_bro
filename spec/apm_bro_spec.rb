@@ -908,6 +908,12 @@ RSpec.describe DeadBro do
       expect { DeadBro.track(StandardError.new("test")) }.not_to raise_error
     end
 
+    it "does not swallow non-StandardError exceptions raised during reporting" do
+      non_standard = Class.new(Exception)
+      allow(mock_client).to receive(:post_metric).and_raise(non_standard)
+      expect { DeadBro.track(StandardError.new("test")) }.to raise_error(non_standard)
+    end
+
     it "uses 'exception.tracked' as event name for anonymous exception classes" do
       anon_error = Class.new(StandardError).new("anon error")
       DeadBro.track(anon_error)
