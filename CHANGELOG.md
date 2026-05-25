@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.2.17] - 2026-05-25
+
+### Added
+- `DeadBro.track(error, **context)`: manually report a rescued exception to the DeadBro backend from any `rescue` block. Accepts any `Exception` subclass and optional keyword arguments forwarded as a `:context` hash in the payload. The report includes exception class, message, a 50-frame backtrace, `occurred_at` timestamp, environment, and any captured log lines from the current request. Never raises — APM reporting will not interfere with your application code.
+
 ## [0.2.16] - 2026-05-24
 
 ### Added

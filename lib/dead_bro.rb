@@ -137,6 +137,61 @@ module DeadBro
     @monitor = monitor
   end
 
+  # Manually report a rescued exception to the DeadBro backend.
+  #
+  # Call this from any rescue block to track an error even when your app
+  # handles it gracefully and doesn't re-raise.
+  #
+  # Usage:
+  #   begin
+  #     charge_card(user)
+  #   rescue Stripe::CardError => e
+  #     DeadBro.track(e, user_id: current_user.id, plan: "pro")
+  #     render json: { error: "Card declined" }, status: 422
+  #   end
+  #
+  # Any keyword arguments are forwarded as a :context hash in the payload.
+  def self.track(error, **context)
+    return unless error.is_a?(Exception)
+
+    begin
+      exception_class = error.class.name.to_s
+      event_name = exception_class.empty? ? "exception.tracked" : exception_class
+
+      payload = {
+        exception_class: exception_class,
+        message: error.message.to_s[0, 1000],
+        backtrace: Array(error.backtrace).first(50),
+        occurred_at: Process.clock_gettime(Process::CLOCK_REALTIME).to_i, # report time, not raise time
+        tracked: true,
+        rails_env: env,
+        app: begin
+               if defined?(Rails) && Rails.respond_to?(:application)
+                 Rails.application.class.module_parent_name
+               else
+                 ""
+               end
+             rescue StandardError
+               ""
+             end,
+        pid: Process.pid,
+        logs: begin
+          logger.logs
+        rescue StandardError
+          []
+        end
+      }
+
+      payload[:context] = context unless context.empty?
+
+      client.post_metric(event_name: event_name, payload: payload, force: true)
+    rescue StandardError => _e
+      # Never let APM reporting interfere with the host app
+    end
+
+    nil
+  end
+
   # Shared constant for tracking start time (used by all subscribers)
   TRACKING_START_TIME_KEY = :dead_bro_tracking_start_time
   MAX_TRACKING_DURATION_SECONDS = 3600 # 1 hour
