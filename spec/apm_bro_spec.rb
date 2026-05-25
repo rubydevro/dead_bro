@@ -811,6 +811,102 @@ RSpec.describe DeadBro do
     end
   end
 
+  describe ".track" do
+    let(:captured_calls) { [] }
+    let(:mock_client) { instance_double(DeadBro::Client) }
+
+    before do
+      DeadBro.reset_configuration!
+      allow(DeadBro).to receive(:client).and_return(mock_client)
+      allow(mock_client).to receive(:post_metric) do |event_name:, payload:, force: false|
+        captured_calls << {event_name: event_name, payload: payload, force: force}
+      end
+    end
+
+    after { DeadBro.reset_configuration! }
+
+    it "sends the error with force: true" do
+      error = StandardError.new("something broke")
+      error.set_backtrace(["app/models/user.rb:10:in `save'"])
+      DeadBro.track(error)
+      expect(captured_calls.length).to eq(1)
+      call = captured_calls.first
+      expect(call[:force]).to be true
+    end
+
+    it "uses the exception class name as the event name" do
+      DeadBro.track(ArgumentError.new("bad arg"))
+      expect(captured_calls.first[:event_name]).to eq("ArgumentError")
+    end
+
+    it "includes exception_class, message, backtrace, and tracked: true in the payload" do
+      error = RuntimeError.new("boom")
+      error.set_backtrace(["app/controllers/orders_controller.rb:42:in `create'"])
+      DeadBro.track(error)
+      payload = captured_calls.first[:payload]
+      expect(payload[:exception_class]).to eq("RuntimeError")
+      expect(payload[:message]).to eq("boom")
+      expect(payload[:backtrace]).to eq(["app/controllers/orders_controller.rb:42:in `create'"])
+      expect(payload[:tracked]).to be true
+    end
+
+    it "includes occurred_at as a unix timestamp, pid, and rails_env" do
+      DeadBro.track(StandardError.new("fail"))
+      payload = captured_calls.first[:payload]
+      expect(payload[:occurred_at]).to be_a(Integer)
+      expect(payload[:pid]).to eq(Process.pid)
+      expect(payload[:rails_env]).to be_a(String)
+    end
+
+    it "includes context keyword args under :context" do
+      DeadBro.track(StandardError.new("fail"), user_id: 42, plan: "pro")
+      expect(captured_calls.first[:payload][:context]).to eq({user_id: 42, plan: "pro"})
+    end
+
+    it "omits :context key when no context is given" do
+      DeadBro.track(StandardError.new("fail"))
+      expect(captured_calls.first[:payload]).not_to have_key(:context)
+    end
+
+    it "includes current logs from the logger" do
+      DeadBro.logger.clear
+      DeadBro.logger.info("payment failed")
+      DeadBro.track(StandardError.new("fail"))
+      logs = captured_calls.first[:payload][:logs]
+      expect(logs.length).to eq(1)
+      expect(logs.first[:msg]).to eq("payment failed")
+      DeadBro.logger.clear
+    end
+
+    it "truncates messages longer than 1000 characters" do
+      DeadBro.track(StandardError.new("x" * 1500))
+      expect(captured_calls.first[:payload][:message].length).to eq(1000)
+    end
+
+    it "limits backtrace to 50 frames" do
+      error = StandardError.new("deep")
+      error.set_backtrace(Array.new(100) { |i| "app/models/user.rb:#{i}:in `method'" })
+      DeadBro.track(error)
+      expect(captured_calls.first[:payload][:backtrace].length).to eq(50)
+    end
+
+    it "returns nil" do
+      expect(DeadBro.track(StandardError.new("x"))).to be_nil
+    end
+
+    it "does nothing when given a non-Exception" do
+      DeadBro.track("not an error")
+      DeadBro.track(42)
+      DeadBro.track(nil)
+      expect(captured_calls).to be_empty
+    end
+
+    it "does not raise when the client raises internally" do
+      allow(mock_client).to receive(:post_metric).and_raise(RuntimeError, "client exploded")
+      expect { DeadBro.track(StandardError.new("test")) }.not_to raise_error
+    end
+  end
+
   describe "DeadBro module" do
     it "configures settings via configure block" do
       DeadBro.configure do |config|
