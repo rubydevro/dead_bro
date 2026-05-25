@@ -817,13 +817,17 @@ RSpec.describe DeadBro do
 
     before do
       DeadBro.reset_configuration!
+      DeadBro.logger.clear
       allow(DeadBro).to receive(:client).and_return(mock_client)
       allow(mock_client).to receive(:post_metric) do |event_name:, payload:, force: false|
         captured_calls << {event_name: event_name, payload: payload, force: force}
       end
     end
 
-    after { DeadBro.reset_configuration! }
+    after do
+      DeadBro.reset_configuration!
+      DeadBro.logger.clear
+    end
 
     it "sends the error with force: true" do
       error = StandardError.new("something broke")
@@ -869,13 +873,11 @@ RSpec.describe DeadBro do
     end
 
     it "includes current logs from the logger" do
-      DeadBro.logger.clear
       DeadBro.logger.info("payment failed")
       DeadBro.track(StandardError.new("fail"))
       logs = captured_calls.first[:payload][:logs]
       expect(logs.length).to eq(1)
       expect(logs.first[:msg]).to eq("payment failed")
-      DeadBro.logger.clear
     end
 
     it "truncates messages longer than 1000 characters" do
@@ -904,6 +906,17 @@ RSpec.describe DeadBro do
     it "does not raise when the client raises internally" do
       allow(mock_client).to receive(:post_metric).and_raise(RuntimeError, "client exploded")
       expect { DeadBro.track(StandardError.new("test")) }.not_to raise_error
+    end
+
+    it "uses 'exception.tracked' as event name for anonymous exception classes" do
+      anon_error = Class.new(StandardError).new("anon error")
+      DeadBro.track(anon_error)
+      expect(captured_calls.first[:event_name]).to eq("exception.tracked")
+    end
+
+    it "includes app as a String in the payload" do
+      DeadBro.track(StandardError.new("fail"))
+      expect(captured_calls.first[:payload][:app]).to be_a(String)
     end
   end
 

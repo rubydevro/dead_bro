@@ -162,7 +162,7 @@ module DeadBro
         exception_class: exception_class,
         message: error.message.to_s[0, 1000],
         backtrace: Array(error.backtrace).first(50),
-        occurred_at: Time.now.utc.to_i,
+        occurred_at: Process.clock_gettime(Process::CLOCK_REALTIME).to_i,
         tracked: true,
         rails_env: env,
         app: begin
@@ -171,17 +171,21 @@ module DeadBro
                else
                  ""
                end
-             rescue
+             rescue StandardError
                ""
              end,
         pid: Process.pid,
-        logs: begin; logger.logs; rescue; []; end
+        logs: begin
+          logger.logs
+        rescue StandardError
+          []
+        end
       }
 
       payload[:context] = context unless context.empty?
 
       client.post_metric(event_name: event_name, payload: payload, force: true)
-    rescue
+    rescue StandardError
       # Never let APM reporting interfere with the host app
     end
 
