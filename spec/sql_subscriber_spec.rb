@@ -67,15 +67,20 @@ RSpec.describe DeadBro::SqlSubscriber do
     # Give notifications time to process
     sleep(0.1)
 
-    # Get tracked queries
-    queries = sql_subscriber.stop_request_tracking
+    # stop_request_tracking now returns aggregates sorted by total_duration_ms desc
+    aggregates = sql_subscriber.stop_request_tracking
 
-    expect(queries.length).to eq(2)
-    expect(queries.first[:sql]).to eq("SELECT * FROM users")
-    expect(queries.first[:name]).to eq("User Load")
-    expect(queries.first[:cached]).to be false
-    expect(queries.first[:connection_id]).to eq(123)
-    expect(queries.first[:duration_ms]).to be_a(Numeric)
+    expect(aggregates.length).to eq(2)
+    sqls = aggregates.map { |a| a[:sql] }
+    expect(sqls).to include("SELECT * FROM users")
+    expect(sqls).to include("UPDATE users SET last_login = NOW()")
+
+    select_agg = aggregates.find { |a| a[:sql] == "SELECT * FROM users" }
+    expect(select_agg[:name]).to eq("User Load")
+    expect(select_agg[:count]).to eq(1)
+    expect(select_agg[:total_duration_ms]).to be_a(Numeric)
+    expect(select_agg[:cached_count]).to eq(0)
+    expect(select_agg[:n_plus_one]).to be false
   end
 
   it "tracks all queries during request processing" do
@@ -84,7 +89,7 @@ RSpec.describe DeadBro::SqlSubscriber do
     sql_subscriber.subscribe!
     sql_subscriber.start_request_tracking
 
-    # Simulate multiple queries
+    # Simulate multiple unique queries
     5.times do |i|
       start = Time.now
       finish = start + 0.001
@@ -99,11 +104,41 @@ RSpec.describe DeadBro::SqlSubscriber do
     # Give notifications time to process
     sleep(0.1)
 
-    queries = sql_subscriber.stop_request_tracking
-    expect(queries.length).to eq(5)
-    # Should track all queries
-    expect(queries.map { |q| q[:sql] }).to include("SELECT * FROM table0")
-    expect(queries.map { |q| q[:sql] }).to include("SELECT * FROM table4")
+    aggregates = sql_subscriber.stop_request_tracking
+    expect(aggregates.length).to eq(5)
+    sqls = aggregates.map { |a| a[:sql] }
+    expect(sqls).to include("SELECT * FROM table0")
+    expect(sqls).to include("SELECT * FROM table4")
+  end
+
+  it "detects N+1 queries and captures backtrace at the threshold boundary" do
+    skip unless defined?(ActiveSupport::Notifications)
+
+    sql_subscriber.subscribe!
+    sql_subscriber.start_request_tracking
+
+    # Fire the same logical query N_PLUS_ONE_THRESHOLD times with different literal IDs
+    # (normalize_for_n_plus_one strips numeric literals so they collapse to one key)
+    DeadBro::SqlSubscriber::N_PLUS_ONE_THRESHOLD.times do |i|
+      start = Time.now
+      finish = start + 0.001
+      ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+        sql: "SELECT * FROM posts WHERE user_id = #{i + 1}",
+        name: "Post Load",
+        cached: false,
+        connection_id: 123
+      })
+    end
+
+    sleep(0.1)
+
+    aggregates = sql_subscriber.stop_request_tracking
+    expect(aggregates.length).to eq(1)
+    agg = aggregates.first
+    expect(agg[:count]).to eq(DeadBro::SqlSubscriber::N_PLUS_ONE_THRESHOLD)
+    expect(agg[:n_plus_one]).to be true
+    # Backtrace is captured at the threshold boundary
+    expect(agg[:backtrace]).to be_a(Array)
   end
 
   it "ignores SCHEMA queries" do
@@ -194,10 +229,11 @@ RSpec.describe DeadBro::SqlSubscriber do
       })
       sleep(0.05)
 
-      # Inner job stops - should return only the inner query
+      # Inner job stops - should return only the inner query aggregate
       inner_queries = sql_subscriber.stop_request_tracking
       expect(inner_queries.length).to eq(1)
       expect(inner_queries.first[:sql]).to eq("SELECT * FROM inner")
+      expect(inner_queries.first[:count]).to eq(1)
 
       # Two SQLs during outer job
       start2 = Time.now
@@ -218,10 +254,10 @@ RSpec.describe DeadBro::SqlSubscriber do
       })
       sleep(0.05)
 
-      # Outer job stops - should return only the outer queries
+      # Outer job stops - should return only the outer query aggregates
       outer_queries = sql_subscriber.stop_request_tracking
       expect(outer_queries.length).to eq(2)
-      expect(outer_queries.map { |q| q[:sql] }).to contain_exactly("SELECT * FROM outer1", "SELECT * FROM outer2")
+      expect(outer_queries.map { |a| a[:sql] }).to contain_exactly("SELECT * FROM outer1", "SELECT * FROM outer2")
       expect(Thread.current[:dead_bro_sql_queries]).to be_nil
     end
   end
