@@ -88,6 +88,7 @@ module DeadBro
     end
 
     def build_cause_chain(exception)
+      return [] unless exception
       chain = []
       cause = exception.cause
       depth = 0
