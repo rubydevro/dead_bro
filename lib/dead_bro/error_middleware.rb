@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "rack"
 
 module DeadBro
@@ -35,6 +36,8 @@ module DeadBro
         exception_class: exception.class.name,
         message: truncate(exception.message.to_s, 1000),
         backtrace: safe_backtrace(exception),
+        fingerprint: compute_fingerprint(exception),
+        cause_chain: build_cause_chain(exception),
         occurred_at: Time.now.utc.to_i,
         rack:
           {
@@ -63,6 +66,41 @@ module DeadBro
 
     def safe_backtrace(exception)
       Array(exception.backtrace).first(50)
+    rescue
+      []
+    end
+
+    def normalize_message(msg)
+      msg.to_s
+        .gsub(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i, "UUID")
+        .gsub(/\b\d+\b/, "N")
+        .gsub(/"[^"]*"/, '"?"')
+        .gsub(/'[^']*'/, "'?'")
+        .strip
+    end
+
+    def compute_fingerprint(exception)
+      top_frame = Array(exception.backtrace).first.to_s.gsub(/:\d+:in /, ":N:in ")
+      input = "#{exception.class.name}|#{normalize_message(exception.message)}|#{top_frame}"
+      Digest::SHA256.hexdigest(input)[0, 16]
+    rescue
+      nil
+    end
+
+    def build_cause_chain(exception)
+      chain = []
+      cause = exception.cause
+      depth = 0
+      while cause && depth < 5
+        chain << {
+          exception_class: cause.class.name,
+          message: truncate(cause.message.to_s, 500),
+          backtrace_top: Array(cause.backtrace).first(3)
+        }
+        cause = cause.cause
+        depth += 1
+      end
+      chain
     rescue
       []
     end

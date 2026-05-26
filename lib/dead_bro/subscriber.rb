@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "active_support/notifications"
 
 module DeadBro
@@ -139,6 +140,8 @@ module DeadBro
               exception_class: exception_class || exception_obj&.class&.name,
               message: (exception_message || exception_obj&.message).to_s[0, 1000],
               backtrace: backtrace,
+              fingerprint: compute_error_fingerprint(exception_obj),
+              cause_chain: build_cause_chain(exception_obj),
               error: true,
               logs: DeadBro.logger.logs
             }
@@ -400,6 +403,43 @@ module DeadBro
       data[:headers].env["warden"].user.id
     rescue
       nil
+    end
+
+    def self.normalize_error_message(msg)
+      msg.to_s
+        .gsub(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i, "UUID")
+        .gsub(/\b\d+\b/, "N")
+        .gsub(/"[^"]*"/, '"?"')
+        .gsub(/'[^']*'/, "'?'")
+        .strip
+    end
+
+    def self.compute_error_fingerprint(exception)
+      return nil unless exception
+      top_frame = Array(exception.backtrace).first.to_s.gsub(/:\d+:in /, ":N:in ")
+      input = "#{exception.class.name}|#{normalize_error_message(exception.message)}|#{top_frame}"
+      Digest::SHA256.hexdigest(input)[0, 16]
+    rescue
+      nil
+    end
+
+    def self.build_cause_chain(exception)
+      return [] unless exception
+      chain = []
+      cause = exception.cause
+      depth = 0
+      while cause && depth < 5
+        chain << {
+          exception_class: cause.class.name,
+          message: cause.message.to_s[0, 500],
+          backtrace_top: Array(cause.backtrace).first(3)
+        }
+        cause = cause.cause
+        depth += 1
+      end
+      chain
+    rescue
+      []
     end
   end
 end
