@@ -111,7 +111,7 @@ module DeadBro
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
         Rails.logger.info(msg)
       else
-        warn(msg)
+        $stdout.puts(msg)
       end
     end
 

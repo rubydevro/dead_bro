@@ -91,6 +91,15 @@ RSpec.describe DeadBro::Monitor do
       monitor.stop
     end
 
+    it "sends a synchronous heartbeat on startup to fetch remote settings" do
+      allow(monitor).to receive(:collect_and_send_stats)
+      expect(client).to receive(:post_heartbeat).with(sync: true)
+
+      monitor.start
+      sleep(0.1)
+      monitor.stop
+    end
+
     it "handles errors gracefully in the thread" do
       allow(monitor).to receive(:collect_and_send_stats).and_raise(StandardError.new("Test error"))
       allow(monitor).to receive(:log_error)

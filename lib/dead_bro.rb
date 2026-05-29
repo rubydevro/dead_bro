@@ -143,6 +143,9 @@ module DeadBro
   end
 
   def self.process_command_line
+    # /proc/self/cmdline is Linux-only; on macOS/Windows the fallback to
+    # $PROGRAM_NAME is used, which may miss some process fingerprints (e.g.
+    # a Sidekiq invocation that uses a wrapper script).
     File.readable?("/proc/self/cmdline") ? File.read("/proc/self/cmdline").tr("\0", " ").strip : $PROGRAM_NAME.to_s
   rescue
     $PROGRAM_NAME.to_s
