@@ -32,18 +32,33 @@ module DeadBro
       nil
     end
 
-    def post_heartbeat
+    def post_heartbeat(sync: false)
       return if @configuration.api_key.nil?
 
       @configuration.last_heartbeat_attempt_at = Time.now.utc
-      body = {event: "heartbeat", payload: {}, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
+      body = {event: "heartbeat", payload: {rails_env: DeadBro.env}, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
 
-      dispatch_request(
-        url: metrics_endpoint_url,
-        body: body,
-        event_name: "heartbeat",
-        apply_settings: true
-      )
+      if sync
+        # Called from the monitor thread on startup — run inline so settings are
+        # applied before the first collection tick.
+        uri = URI.parse(metrics_endpoint_url)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == "https")
+        http.open_timeout = @configuration.open_timeout
+        http.read_timeout = @configuration.read_timeout
+        request = Net::HTTP::Post.new(uri.request_uri)
+        request["Content-Type"] = "application/json"
+        request["Authorization"] = "Bearer #{@configuration.api_key}"
+        request.body = JSON.dump(body)
+        perform_request(http, request, event_name: "heartbeat", apply_settings: true)
+      else
+        dispatch_request(
+          url: metrics_endpoint_url,
+          body: body,
+          event_name: "heartbeat",
+          apply_settings: true
+        )
+      end
 
       nil
     end
@@ -52,7 +67,7 @@ module DeadBro
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
       return if @configuration.skip_tracking?
-      return unless @configuration.job_queue_monitoring_enabled
+      return unless @configuration.monitor_enabled
       return if circuit_open?
 
       body = {payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
@@ -206,12 +221,5 @@ module DeadBro
       )
     end
 
-    def log_debug(message)
-      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.debug(message)
-      else
-        $stdout.puts(message)
-      end
-    end
   end
 end

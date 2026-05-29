@@ -9,9 +9,10 @@ RSpec.describe DeadBro::Monitor do
   before do
     # Reset configuration
     DeadBro.reset_configuration!
-    DeadBro.configuration.job_queue_monitoring_enabled = true
+    DeadBro.configuration.monitor_enabled = true
     DeadBro.configuration.enabled = true
     DeadBro.configuration.api_key = "test-api-key"
+    allow(client).to receive(:post_heartbeat)
   end
 
   after do
@@ -62,8 +63,8 @@ RSpec.describe DeadBro::Monitor do
       monitor.stop
     end
 
-    it "starts even when job_queue_monitoring_enabled is false" do
-      DeadBro.configuration.job_queue_monitoring_enabled = false
+    it "starts even when monitor_enabled is false" do
+      DeadBro.configuration.monitor_enabled = false
       allow(monitor).to receive(:collect_and_send_stats)
 
       thread = monitor.start
@@ -87,6 +88,15 @@ RSpec.describe DeadBro::Monitor do
       expect(thread).to be_a(Thread)
       expect(monitor.instance_variable_get(:@running)).to be true
 
+      monitor.stop
+    end
+
+    it "sends a synchronous heartbeat on startup to fetch remote settings" do
+      allow(monitor).to receive(:collect_and_send_stats)
+      expect(client).to receive(:post_heartbeat).with(sync: true)
+
+      monitor.start
+      sleep(0.1)
       monitor.stop
     end
 
@@ -143,9 +153,9 @@ RSpec.describe DeadBro::Monitor do
       rails_module = Rails if rails_defined
       Object.send(:remove_const, :Rails) if rails_defined
 
-      expect($stderr).to receive(:puts).with("[DeadBro::Monitor] Test error")
-
-      monitor.send(:log_error, "Test error")
+      expect {
+        monitor.send(:log_error, "Test error")
+      }.to output("[DeadBro::Monitor] Test error\n").to_stderr
 
       # Restore Rails
       stub_const("Rails", rails_module) if rails_defined && !defined?(Rails)

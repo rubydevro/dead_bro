@@ -18,6 +18,7 @@ module DeadBro
         now = Time.now.utc
 
         {
+          kind: DeadBro.process_kind,
           pid: Process.pid,
           hostname: safe_hostname,
           boot_time: rails_boot_time,

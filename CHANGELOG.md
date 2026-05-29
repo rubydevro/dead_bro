@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Added
+- Monitor thread now sends a synchronous heartbeat on startup before the first collection tick. This ensures remote settings — including `monitor_enabled` — are applied from the very first reporting cycle, so Sidekiq workers and other non-web processes that have not yet sent any metrics still receive the correct configuration immediately on boot rather than waiting up to 60 seconds for the first scheduled tick.
+
 ## [0.2.17] - 2026-05-25
 
 ### Added

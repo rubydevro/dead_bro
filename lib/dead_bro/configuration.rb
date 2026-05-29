@@ -12,7 +12,7 @@ module DeadBro
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled,
       :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled,
-      :job_queue_monitoring_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
+      :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
       :max_sql_queries_to_send, :max_logs_to_send
 
     # Readers for exclusion lists. Writers are defined below so we can compile
@@ -58,7 +58,7 @@ module DeadBro
       enabled sample_rate memory_tracking_enabled allocation_tracking_enabled
       explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
-      job_queue_monitoring_enabled enable_db_stats enable_process_stats enable_system_stats
+      monitor_enabled enable_db_stats enable_process_stats enable_system_stats
     ].freeze
 
     def initialize
@@ -87,7 +87,7 @@ module DeadBro
       self.excluded_jobs = []
       self.exclusive_controllers = []
       self.exclusive_jobs = []
-      @job_queue_monitoring_enabled = false
+      @monitor_enabled = false
       @enable_db_stats = false
       @enable_process_stats = false
       @enable_system_stats = false
@@ -145,7 +145,7 @@ module DeadBro
           when "sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
             send(:"#{k}=", value.to_i)
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
-               "job_queue_monitoring_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
+               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))

@@ -24,6 +24,16 @@ module DeadBro
       @running = true
       @thread = Thread.new do
         Thread.current.abort_on_exception = false
+
+        # Fetch initial settings before the first collection tick so processes
+        # that haven't yet posted any metrics (e.g. Sidekiq at boot) still get
+        # monitor_enabled and other remote settings from the backend.
+        begin
+          @client.post_heartbeat(sync: true)
+        rescue => e
+          log_error("Error fetching initial settings: #{e.message}")
+        end
+
         loop do
           break unless @running
 
@@ -59,6 +69,7 @@ module DeadBro
         environment: DeadBro.env,
         host: process_hostname,
         pid: Process.pid,
+        process_kind: DeadBro.process_kind,
         current_time: Time.now.utc.iso8601,
         jobs: DeadBro::Collectors::Jobs.collect,
         network: DeadBro::Collectors::Network.collect
@@ -86,10 +97,11 @@ module DeadBro
     end
 
     def log_error(message)
+      msg = "[DeadBro::Monitor] #{message}"
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.error("[DeadBro::Monitor] #{message}")
+        Rails.logger.error(msg)
       else
-        $stderr.puts("[DeadBro::Monitor] #{message}")
+        warn(msg)
       end
     end
 

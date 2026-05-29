@@ -7,7 +7,7 @@ RSpec.describe DeadBro::Client, "#post_monitor_stats" do
     c = DeadBro::Configuration.new
     c.enabled = true
     c.api_key = "test_key"
-    c.job_queue_monitoring_enabled = true
+    c.monitor_enabled = true
     c
   end
 
@@ -45,8 +45,8 @@ RSpec.describe DeadBro::Client, "#post_monitor_stats" do
     client.post_monitor_stats({jobs: []})
   end
 
-  it "skips request when job_queue_monitoring_enabled is false" do
-    config.job_queue_monitoring_enabled = false
+  it "skips request when monitor_enabled is false" do
+    config.monitor_enabled = false
     expect(Net::HTTP).not_to receive(:new)
     client.post_monitor_stats({jobs: []})
   end
