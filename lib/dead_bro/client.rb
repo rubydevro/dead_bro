@@ -64,26 +64,11 @@ module DeadBro
     end
 
     def post_monitor_stats(payload)
-      if @configuration.api_key.nil?
-        log_debug("post_monitor_stats skipped: api_key not set")
-        return
-      end
-      unless @configuration.enabled
-        log_debug("post_monitor_stats skipped: enabled=false")
-        return
-      end
-      if @configuration.skip_tracking?
-        log_debug("post_monitor_stats skipped: skip_tracking=true")
-        return
-      end
-      unless @configuration.monitor_enabled
-        log_debug("post_monitor_stats skipped: monitor_enabled=false")
-        return
-      end
-      if circuit_open?
-        log_debug("post_monitor_stats skipped: circuit open")
-        return
-      end
+      return if @configuration.api_key.nil?
+      return unless @configuration.enabled
+      return if @configuration.skip_tracking?
+      return unless @configuration.monitor_enabled
+      return if circuit_open?
 
       body = {payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
 
@@ -195,12 +180,8 @@ module DeadBro
       return unless response.is_a?(Net::HTTPSuccess)
 
       body = JSON.parse(response.body)
-      unless body.is_a?(Hash) && body["settings"].is_a?(Hash)
-        log_debug("[DeadBro::Client] Response has no settings payload (body keys: #{body.keys rescue "?"})")
-        return
-      end
+      return unless body.is_a?(Hash) && body["settings"].is_a?(Hash)
 
-      log_debug("[DeadBro::Client] Applying remote settings: #{body["settings"].inspect}")
       @configuration.apply_remote_settings(body["settings"])
 
       updated_at_str = body["settings_updated_at"]
@@ -240,12 +221,5 @@ module DeadBro
       )
     end
 
-    def log_debug(message)
-      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.debug(message)
-      else
-        $stdout.puts(message)
-      end
-    end
   end
 end

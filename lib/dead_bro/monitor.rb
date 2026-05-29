@@ -19,12 +19,7 @@ module DeadBro
       # Reset: handles post-fork where @running=true but the thread is dead.
       @running = false
 
-      unless DeadBro.configuration.enabled
-        log_info("Not starting — enabled=false")
-        return
-      end
-
-      log_info("Starting monitor thread (pid=#{Process.pid}, process_kind=#{DeadBro.process_kind})")
+      return unless DeadBro.configuration.enabled
 
       @running = true
       @thread = Thread.new do
@@ -33,10 +28,8 @@ module DeadBro
         # Fetch initial settings before the first collection tick so processes
         # that haven't yet posted any metrics (e.g. Sidekiq at boot) still get
         # monitor_enabled and other remote settings from the backend.
-        log_info("Sending startup heartbeat to fetch remote settings")
         begin
           @client.post_heartbeat(sync: true)
-          log_info("Heartbeat complete — monitor_enabled=#{DeadBro.configuration.monitor_enabled}")
         rescue => e
           log_error("Error fetching initial settings: #{e.message}")
         end
@@ -45,7 +38,6 @@ module DeadBro
           break unless @running
 
           begin
-            log_info("Collecting stats (monitor_enabled=#{DeadBro.configuration.monitor_enabled})")
             collect_and_send_stats
           rescue => e
             log_error("Error collecting stats: #{e.message}")
@@ -58,8 +50,6 @@ module DeadBro
             @stop_cv.wait(@stop_mutex, SLEEP_INTERVAL_SECONDS) if @running
           end
         end
-
-        log_info("Monitor thread stopped")
       end
 
       @thread
@@ -104,15 +94,6 @@ module DeadBro
       Socket.gethostname
     rescue
       "unknown"
-    end
-
-    def log_info(message)
-      msg = "[DeadBro::Monitor] #{message}"
-      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.info(msg)
-      else
-        $stdout.puts(msg)
-      end
     end
 
     def log_error(message)
