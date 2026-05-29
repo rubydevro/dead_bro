@@ -747,7 +747,7 @@ RSpec.describe DeadBro do
         "excluded_jobs" => ["SlowJob"],
         "exclusive_controllers" => [],
         "exclusive_jobs" => [],
-        "job_queue_monitoring_enabled" => true,
+        "monitor_enabled" => true,
         "enable_db_stats" => true,
         "enable_process_stats" => false,
         "enable_system_stats" => false

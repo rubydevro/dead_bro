@@ -19,15 +19,33 @@ module DeadBro
       # Reset: handles post-fork where @running=true but the thread is dead.
       @running = false
 
-      return unless DeadBro.configuration.enabled
+      unless DeadBro.configuration.enabled
+        log_info("Not starting — enabled=false")
+        return
+      end
+
+      log_info("Starting monitor thread (pid=#{Process.pid}, process_kind=#{DeadBro.process_kind})")
 
       @running = true
       @thread = Thread.new do
         Thread.current.abort_on_exception = false
+
+        # Fetch initial settings before the first collection tick so processes
+        # that haven't yet posted any metrics (e.g. Sidekiq at boot) still get
+        # monitor_enabled and other remote settings from the backend.
+        log_info("Sending startup heartbeat to fetch remote settings")
+        begin
+          @client.post_heartbeat(sync: true)
+          log_info("Heartbeat complete — monitor_enabled=#{DeadBro.configuration.monitor_enabled}")
+        rescue => e
+          log_error("Error fetching initial settings: #{e.message}")
+        end
+
         loop do
           break unless @running
 
           begin
+            log_info("Collecting stats (monitor_enabled=#{DeadBro.configuration.monitor_enabled})")
             collect_and_send_stats
           rescue => e
             log_error("Error collecting stats: #{e.message}")
@@ -40,6 +58,8 @@ module DeadBro
             @stop_cv.wait(@stop_mutex, SLEEP_INTERVAL_SECONDS) if @running
           end
         end
+
+        log_info("Monitor thread stopped")
       end
 
       @thread
@@ -59,6 +79,7 @@ module DeadBro
         environment: DeadBro.env,
         host: process_hostname,
         pid: Process.pid,
+        process_kind: DeadBro.process_kind,
         current_time: Time.now.utc.iso8601,
         jobs: DeadBro::Collectors::Jobs.collect,
         network: DeadBro::Collectors::Network.collect
@@ -85,11 +106,21 @@ module DeadBro
       "unknown"
     end
 
-    def log_error(message)
+    def log_info(message)
+      msg = "[DeadBro::Monitor] #{message}"
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.error("[DeadBro::Monitor] #{message}")
+        Rails.logger.info(msg)
       else
-        $stderr.puts("[DeadBro::Monitor] #{message}")
+        warn(msg)
+      end
+    end
+
+    def log_error(message)
+      msg = "[DeadBro::Monitor] #{message}"
+      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+        Rails.logger.error(msg)
+      else
+        warn(msg)
       end
     end
 

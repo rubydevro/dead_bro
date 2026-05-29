@@ -68,7 +68,7 @@ if defined?(Rails) && defined?(Rails::Railtie)
           end
 
           # Always start the monitor thread. The thread runs every 60s but
-          # post_monitor_stats skips the HTTP POST when job_queue_monitoring_enabled
+          # post_monitor_stats skips the HTTP POST when monitor_enabled
           # is false, so the backend can toggle monitoring on/off mid-process.
           require "dead_bro/monitor"
           DeadBro.monitor = DeadBro::Monitor.new(client: shared_client)
