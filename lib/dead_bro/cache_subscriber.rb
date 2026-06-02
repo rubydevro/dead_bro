@@ -24,7 +24,9 @@ module DeadBro
           next unless Thread.current[THREAD_LOCAL_KEY]
 
           duration_ms = ((finished - started) * 1000.0).round(2)
-          event = build_event(name, data, duration_ms)
+          tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+          start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
+          event = build_event(name, data, duration_ms, start_offset_ms)
           if event && should_continue_tracking?
             Thread.current[THREAD_LOCAL_KEY] << event
           end
@@ -63,12 +65,13 @@ module DeadBro
       true
     end
 
-    def self.build_event(name, data, duration_ms)
+    def self.build_event(name, data, duration_ms, start_offset_ms = nil)
       return nil unless data.is_a?(Hash)
 
       {
         event: name,
         duration_ms: duration_ms,
+        start_offset_ms: start_offset_ms,
         key: safe_key(data[:key]),
         keys_count: safe_keys_count(data[:keys]),
         hit: infer_hit(name, data),

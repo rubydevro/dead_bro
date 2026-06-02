@@ -21,6 +21,7 @@ module DeadBro
       mod = Module.new do
         define_method(:request) do |req, body = nil, &block|
           start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          wall_start = Time.now
           response = nil
           error = nil
           begin
@@ -46,6 +47,9 @@ module DeadBro
               # must still be tracked; only skip the deadbro backend itself.
               skip_instrumentation = !is_es_host && uri && (uri.to_s.include?("localhost") || uri.to_s.include?("aberatii.com"))
 
+              tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+              start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
+
               if is_es_host
                 # Route to elasticsearch subscriber instead of http_outgoing
                 if Thread.current[DeadBro::ElasticsearchSubscriber::THREAD_LOCAL_KEY]
@@ -54,7 +58,8 @@ module DeadBro
                     method: req.method,
                     path: path,
                     status: response && response.code.to_i,
-                    duration_ms: duration_ms
+                    duration_ms: duration_ms,
+                    start_offset_ms: start_offset_ms
                   )
                 end
               elsif !skip_instrumentation
@@ -67,6 +72,7 @@ module DeadBro
                   path: (uri && uri.path) || req.path,
                   status: response && response.code.to_i,
                   duration_ms: duration_ms,
+                  start_offset_ms: start_offset_ms,
                   exception: error && error.class.name
                 }
                 if Thread.current[THREAD_LOCAL_KEY] && DeadBro::HttpInstrumentation.should_continue_tracking?

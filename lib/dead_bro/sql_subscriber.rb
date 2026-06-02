@@ -106,6 +106,9 @@ module DeadBro
         duration_ms = ((finished - started) * 1000.0).round(2)
         original_sql = data[:sql]
 
+        tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+        start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
+
         threshold = begin
           DeadBro.configuration.slow_query_threshold_ms
         rescue
@@ -133,6 +136,7 @@ module DeadBro
           sql: sanitized_sql,
           name: data[:name],
           duration_ms: duration_ms,
+          start_offset_ms: start_offset_ms,
           cached: data[:cached] || false,
           connection_id: data[:connection_id],
           trace: captured_trace,
@@ -167,6 +171,7 @@ module DeadBro
               total_allocations: allocations || 0,
               cached_count:      (data[:cached] ? 1 : 0),
               n_plus_one:        false,
+              start_offset_ms:   start_offset_ms,
               backtrace:         captured_trace,
               explain_plan:      nil
             }
