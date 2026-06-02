@@ -13,12 +13,12 @@ module DeadBro
     end
 
     # Called by HttpInstrumentation when it detects a Net::HTTP request to an ES host.
-    def self.record(method:, path:, status:, duration_ms:)
+    def self.record(method:, path:, status:, duration_ms:, start_offset_ms: nil)
       events = Thread.current[THREAD_LOCAL_KEY]
       return unless events
       return unless should_continue_tracking?
 
-      events << build_event(method, path, status, duration_ms)
+      events << build_event(method, path, status, duration_ms, start_offset_ms)
     rescue
     end
 
@@ -120,20 +120,23 @@ module DeadBro
             duration_ms = ((finished - started) * 1000.0).round(2)
             method = payload[:method].to_s.upcase
             path = payload[:path].to_s
-            events << build_event(method, path, payload[:status], duration_ms)
+            tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+            start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
+            events << build_event(method, path, payload[:status], duration_ms, start_offset_ms)
           rescue
           end
         end
       rescue
       end
 
-      def build_event(method, path, status, duration_ms)
+      def build_event(method, path, status, duration_ms, start_offset_ms = nil)
         {
           method: method.to_s.upcase,
           path: sanitize_path(path),
           operation: extract_operation(method, path),
           status: status,
-          duration_ms: duration_ms
+          duration_ms: duration_ms,
+          start_offset_ms: start_offset_ms
         }
       end
     end

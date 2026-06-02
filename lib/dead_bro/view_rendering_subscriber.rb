@@ -14,24 +14,30 @@ module DeadBro
 
     def self.subscribe!(client: Client.new)
       ActiveSupport::Notifications.subscribe(RENDER_TEMPLATE_EVENT) do |_name, started, finished, _uid, data|
+        tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "template", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),
-                       rendered_at: Time.now.utc.to_i)
+                       rendered_at: Time.now.utc.to_i,
+                       start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
       end
 
       ActiveSupport::Notifications.subscribe(RENDER_PARTIAL_EVENT) do |_name, started, finished, _uid, data|
+        tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "partial", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),
                        cache_key: data[:cache_key],
-                       rendered_at: Time.now.utc.to_i)
+                       rendered_at: Time.now.utc.to_i,
+                       start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
       end
 
       ActiveSupport::Notifications.subscribe(RENDER_COLLECTION_EVENT) do |_name, started, finished, _uid, data|
+        tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "collection", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),
                        collection_count: (data[:count] || 0).to_i,
                        collection_cached_count: (data[:cached_count] || 0).to_i,
-                       rendered_at: Time.now.utc.to_i)
+                       rendered_at: Time.now.utc.to_i,
+                       start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
       end
     rescue
     end
@@ -80,7 +86,8 @@ module DeadBro
           rendered_at_max:         rendered_at,
           cache_hit_count:         (view_info[:cache_key] ? 1 : 0),
           collection_count:        view_info[:collection_count].to_i,
-          collection_cached_count: view_info[:collection_cached_count].to_i
+          collection_cached_count: view_info[:collection_cached_count].to_i,
+          start_offset_ms:         view_info[:start_offset_ms]
         }
       end
     end

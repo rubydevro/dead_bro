@@ -63,6 +63,7 @@ module DeadBro
         def record_redis_command(command)
           return yield unless Thread.current[RedisSubscriber::THREAD_LOCAL_KEY]
 
+          wall_start = Time.now
           start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           error = nil
           begin
@@ -77,12 +78,15 @@ module DeadBro
 
             begin
               cmd_info = extract_command_info(command)
+              tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+              start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
               event = {
                 event: "redis.command",
                 command: cmd_info[:command],
                 key: cmd_info[:key],
                 args_count: cmd_info[:args_count],
                 duration_ms: duration_ms,
+                start_offset_ms: start_offset_ms,
                 db: safe_db(@db),
                 error: error ? error.class.name : nil
               }
@@ -98,6 +102,7 @@ module DeadBro
         def record_redis_pipeline(pipeline)
           return yield unless Thread.current[RedisSubscriber::THREAD_LOCAL_KEY]
 
+          wall_start = Time.now
           start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           begin
             result = yield
@@ -108,10 +113,13 @@ module DeadBro
 
             begin
               commands_count = pipeline.commands&.length || 0
+              tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+              start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
               event = {
                 event: "redis.pipeline",
                 commands_count: commands_count,
                 duration_ms: duration_ms,
+                start_offset_ms: start_offset_ms,
                 db: safe_db(@db)
               }
 
@@ -126,6 +134,7 @@ module DeadBro
         def record_redis_multi(multi)
           return yield unless Thread.current[RedisSubscriber::THREAD_LOCAL_KEY]
 
+          wall_start = Time.now
           start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           begin
             result = yield
@@ -136,10 +145,13 @@ module DeadBro
 
             begin
               commands_count = multi.commands&.length || 0
+              tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+              start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
               event = {
                 event: "redis.multi",
                 commands_count: commands_count,
                 duration_ms: duration_ms,
+                start_offset_ms: start_offset_ms,
                 db: safe_db(@db)
               }
 
@@ -201,7 +213,9 @@ module DeadBro
           ActiveSupport::Notifications.subscribe(/\Aredis\..+\z/) do |name, started, finished, _unique_id, data|
             next unless Thread.current[THREAD_LOCAL_KEY]
             duration_ms = ((finished - started) * 1000.0).round(2)
-            event = build_event(name, data, duration_ms)
+            tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+            start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
+            event = build_event(name, data, duration_ms, start_offset_ms)
             if event && should_continue_tracking?
               Thread.current[THREAD_LOCAL_KEY] << event
             end
@@ -239,7 +253,7 @@ module DeadBro
       true
     end
 
-    def self.build_event(name, data, duration_ms)
+    def self.build_event(name, data, duration_ms, start_offset_ms = nil)
       cmd = extract_command(data)
       {
         event: name.to_s,
@@ -247,6 +261,7 @@ module DeadBro
         key: cmd[:key],
         args_count: cmd[:args_count],
         duration_ms: duration_ms,
+        start_offset_ms: start_offset_ms,
         db: safe_db(data[:db])
       }
     rescue
