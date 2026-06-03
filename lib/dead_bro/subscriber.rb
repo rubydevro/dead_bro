@@ -220,7 +220,7 @@ module DeadBro
 
     def self.safe_path(data)
       path = data[:path] || (data[:request] && data[:request].path)
-      path.to_s
+      sanitize_string(path)
     rescue
       ""
     end
@@ -266,10 +266,15 @@ module DeadBro
       {}
     end
 
+    def self.sanitize_string(str)
+      str.to_s.gsub(" ", "")
+    end
+
     # Recursively truncate values to reasonable sizes to avoid huge payloads
     def self.truncate_value(value, max_str: 200, max_array: 20, max_hash_keys: 30)
       case value
       when String
+        value = sanitize_string(value)
         (value.length > max_str) ? value[0, max_str] + "…" : value
       when Numeric, TrueClass, FalseClass, NilClass
         value
@@ -295,7 +300,7 @@ module DeadBro
           elsif data[:request].respond_to?(:env)
             ua = data[:request].env && data[:request].env["HTTP_USER_AGENT"]
           end
-          return ua.to_s[0..200]
+          return sanitize_string(ua)[0..200]
         end
 
         # Fallback to headers object/hash if present in notification data
@@ -303,7 +308,7 @@ module DeadBro
           headers = data[:headers]
           if headers.respond_to?(:[])
             ua = headers["HTTP_USER_AGENT"] || headers["User-Agent"] || headers["user-agent"]
-            return ua.to_s[0..200]
+            return sanitize_string(ua)[0..200]
           elsif headers.respond_to?(:to_h)
             h = begin
               headers.to_h
@@ -311,14 +316,14 @@ module DeadBro
               {}
             end
             ua = h["HTTP_USER_AGENT"] || h["User-Agent"] || h["user-agent"]
-            return ua.to_s[0..200]
+            return sanitize_string(ua)[0..200]
           end
         end
 
         # Fallback to env hash if present in notification data
         if data[:env].is_a?(Hash)
           ua = data[:env]["HTTP_USER_AGENT"]
-          return ua.to_s[0..200]
+          return sanitize_string(ua)[0..200]
         end
 
         ""
