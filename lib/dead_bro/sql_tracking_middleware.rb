@@ -67,6 +67,9 @@ module DeadBro
       # Start AR object instantiation counting for this request
       DeadBro::ArObjectTracker.start_request_tracking if defined?(DeadBro::ArObjectTracker)
 
+      # Start CPU time tracking for this request (thread-local clock)
+      DeadBro::CpuTracker.start_request_tracking if defined?(DeadBro::CpuTracker)
+
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
 
@@ -106,6 +109,7 @@ module DeadBro
       Thread.current[DeadBro::GcTracker::THREAD_KEY] = nil if defined?(DeadBro::GcTracker)
       # Bypass stop_request_tracking intentionally — cleanup only, no return value needed here.
       Thread.current[DeadBro::ArObjectTracker::THREAD_KEY] = nil if defined?(DeadBro::ArObjectTracker)
+      Thread.current[DeadBro::CpuTracker::THREAD_KEY] = nil if defined?(DeadBro::CpuTracker)
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end
 
