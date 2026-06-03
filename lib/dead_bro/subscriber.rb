@@ -267,15 +267,15 @@ module DeadBro
     end
 
     def self.sanitize_string(str)
-      str.to_s.gsub(" ", "")
+      str.to_s.gsub("\x00", "")
     end
 
     # Recursively truncate values to reasonable sizes to avoid huge payloads
     def self.truncate_value(value, max_str: 200, max_array: 20, max_hash_keys: 30)
       case value
       when String
-        value = sanitize_string(value)
-        (value.length > max_str) ? value[0, max_str] + "…" : value
+        sanitized = sanitize_string(value)
+        (sanitized.length > max_str) ? sanitized[0, max_str] + "…" : sanitized
       when Numeric, TrueClass, FalseClass, NilClass
         value
       when Array
