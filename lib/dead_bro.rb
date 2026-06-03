@@ -20,6 +20,7 @@ module DeadBro
   autoload :LightweightMemoryTracker, "dead_bro/lightweight_memory_tracker"
   autoload :GcTracker, "dead_bro/gc_tracker"
   autoload :ArObjectTracker, "dead_bro/ar_object_tracker"
+  autoload :CpuTracker, "dead_bro/cpu_tracker"
   autoload :MemoryHelpers, "dead_bro/memory_helpers"
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"

@@ -72,6 +72,9 @@ module DeadBro
         # Stop AR object instantiation tracking
         ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
 
+        # Stop CPU time tracking — thread CPU time consumed by this request
+        cpu_time_ms = defined?(DeadBro::CpuTracker) ? DeadBro::CpuTracker.stop_request_tracking : nil
+
         # Stop view rendering tracking and get collected view events
         view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
         view_performance = DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
@@ -191,6 +194,7 @@ module DeadBro
           db_connection_checkouts: db_connection_stats[:checkouts],
           gc_pressure: gc_pressure,
           ar_instantiation_count: ar_instantiation_count,
+          cpu_time_ms: cpu_time_ms,
           logs: DeadBro.logger.logs
         }
         client.post_metric(event_name: name, payload: payload)
@@ -214,6 +218,7 @@ module DeadBro
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
       DeadBro::ArObjectTracker.stop_request_tracking if defined?(DeadBro::ArObjectTracker)
+      DeadBro::CpuTracker.stop_request_tracking if defined?(DeadBro::CpuTracker)
     rescue
       # Best effort — draining must never raise from the notifications callback.
     end
