@@ -128,6 +128,14 @@ module DeadBro
     "development"
   end
 
+  # OS hostname for identifying which machine handled a request, job, or metric.
+  def self.safe_hostname
+    require "socket"
+    Socket.gethostname
+  rescue
+    "unknown"
+  end
+
   def self.process_kind
     @process_kind ||= begin
       fingerprint = "#{$PROGRAM_NAME} #{process_command_line}".downcase

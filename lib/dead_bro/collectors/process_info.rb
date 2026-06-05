@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 
 require "rbconfig"
-require "socket"
 
 module DeadBro
   module Collectors
@@ -20,7 +19,7 @@ module DeadBro
         {
           kind: DeadBro.process_kind,
           pid: Process.pid,
-          hostname: safe_hostname,
+          hostname: DeadBro.safe_hostname,
           boot_time: rails_boot_time,
           uptime_s: uptime_seconds(now),
           ruby_version: RUBY_VERSION,
@@ -50,12 +49,6 @@ module DeadBro
         host_os.include?("darwin")
       rescue
         false
-      end
-
-      def safe_hostname
-        Socket.gethostname
-      rescue
-        "unknown"
       end
 
       def rails_boot_time

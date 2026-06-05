@@ -180,6 +180,9 @@ module DeadBro
         return stripped
       end
 
+      revision = read_revision_file
+      return revision unless revision.nil? || revision.empty?
+
       DeadBro.process_deploy_id
     end
 
@@ -248,6 +251,19 @@ module DeadBro
     end
 
     private
+
+    # Capistrano (and similar) write the deployed git SHA to REVISION in the app root.
+    def read_revision_file
+      return nil unless defined?(Rails) && Rails.respond_to?(:root)
+
+      path = Rails.root.join("REVISION")
+      return nil unless path.file?
+
+      stripped = File.read(path).strip
+      stripped.empty? ? nil : stripped
+    rescue
+      nil
+    end
 
     # Turn a list of user-facing patterns into {pattern, has_hash, regex}
     # entries. Regex is nil when the pattern is a plain literal (cheaper eq

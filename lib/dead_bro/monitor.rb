@@ -67,7 +67,7 @@ module DeadBro
     def collect_and_send_stats
       payload = {
         environment: DeadBro.env,
-        host: process_hostname,
+        host: DeadBro.safe_hostname,
         pid: Process.pid,
         process_kind: DeadBro.process_kind,
         current_time: Time.now.utc.iso8601,
@@ -87,13 +87,6 @@ module DeadBro
         payload[:system] = safe_collect { DeadBro::Collectors::System.collect }
       end
       @client.post_monitor_stats(payload)
-    end
-
-    def process_hostname
-      require "socket"
-      Socket.gethostname
-    rescue
-      "unknown"
     end
 
     def log_error(message)

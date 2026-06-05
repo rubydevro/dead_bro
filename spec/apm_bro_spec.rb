@@ -124,6 +124,46 @@ RSpec.describe DeadBro do
       ENV.delete("GIT_COMMIT_SHA")
     end
 
+    it "resolves deploy_id from REVISION file when no env vars are set" do
+      require "pathname"
+      require "tmpdir"
+
+      config = DeadBro::Configuration.new
+      config.deploy_id = nil
+
+      Dir.mktmpdir do |tmpdir|
+        revision_path = File.join(tmpdir, "REVISION")
+        File.write(revision_path, "6f25d7349bfc752bde5aedb35f4d5834b2ae878d\n")
+
+        rails = double("Rails", root: Pathname.new(tmpdir))
+        allow(rails).to receive(:respond_to?).with(:root).and_return(true)
+        stub_const("Rails", rails)
+
+        expect(config.resolve_deploy_id).to eq("6f25d7349bfc752bde5aedb35f4d5834b2ae878d")
+      end
+    end
+
+    it "prefers env vars over REVISION file" do
+      require "pathname"
+      require "tmpdir"
+
+      config = DeadBro::Configuration.new
+      config.deploy_id = nil
+      ENV["GIT_REV"] = "from-env"
+
+      Dir.mktmpdir do |tmpdir|
+        File.write(File.join(tmpdir, "REVISION"), "from-revision-file\n")
+
+        rails = double("Rails", root: Pathname.new(tmpdir))
+        allow(rails).to receive(:respond_to?).with(:root).and_return(true)
+        stub_const("Rails", rails)
+
+        expect(config.resolve_deploy_id).to eq("from-env")
+      end
+    ensure
+      ENV.delete("GIT_REV")
+    end
+
     it "has memory tracking configuration" do
       config = DeadBro::Configuration.new
       expect(config.memory_tracking_enabled).to be true
@@ -967,6 +1007,11 @@ RSpec.describe DeadBro do
       expect(env).to be_a(String)
       # Should return development, test, or production, or fallback to ENV
       expect(["development", "test", "production", ENV["RACK_ENV"], ENV["RAILS_ENV"]].compact).to include(env)
+    end
+
+    it "returns the OS hostname via safe_hostname" do
+      allow(Socket).to receive(:gethostname).and_return("app-server-1")
+      expect(DeadBro.safe_hostname).to eq("app-server-1")
     end
   end
 end

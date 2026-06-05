@@ -136,7 +136,7 @@ module DeadBro
               status: data[:status],
               duration_ms: duration_ms,
               rails_env: DeadBro.env,
-              host: safe_host,
+              host: DeadBro.safe_hostname,
               process_kind: DeadBro.process_kind,
               params: safe_params(data),
               user_agent: safe_user_agent(data),
@@ -168,7 +168,7 @@ module DeadBro
           duration_ms: duration_ms,
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],
-          host: safe_host,
+          host: DeadBro.safe_hostname,
           rails_env: DeadBro.env,
           process_kind: DeadBro.process_kind,
           params: safe_params(data),
@@ -228,18 +228,6 @@ module DeadBro
       sanitize_string(path)
     rescue
       ""
-    end
-
-    def self.safe_host
-      if defined?(Rails) && Rails.respond_to?(:application)
-        begin
-          Rails.application.class.module_parent_name
-        rescue
-          ""
-        end
-      else
-        ""
-      end
     end
 
     def self.safe_params(data)

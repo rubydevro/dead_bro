@@ -372,27 +372,6 @@ module DeadBro
         nil
       end
 
-      def process_hostname
-        if defined?(ProcessInfo)
-          begin
-            ProcessInfo.safe_hostname
-          rescue
-            default_hostname
-          end
-        else
-          default_hostname
-        end
-      rescue
-        default_hostname
-      end
-
-      def default_hostname
-        require "socket"
-        Socket.gethostname
-      rescue
-        "unknown"
-      end
-
       def safe_collect
         yield
       rescue => e

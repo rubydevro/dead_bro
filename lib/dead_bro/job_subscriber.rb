@@ -114,7 +114,7 @@ module DeadBro
           status: "completed",
           sql_queries: sql_queries,
           rails_env: DeadBro.env,
-          host: safe_host,
+          host: DeadBro.safe_hostname,
           process_kind: DeadBro.process_kind,
           memory_usage: memory_usage_mb,
           gc_stats: gc_stats,
@@ -213,7 +213,7 @@ module DeadBro
           message: exception&.message&.to_s&.[](0, 1000),
           backtrace: Array(exception&.backtrace).first(50),
           rails_env: DeadBro.env,
-          host: safe_host,
+          host: DeadBro.safe_hostname,
           process_kind: DeadBro.process_kind,
           memory_usage: memory_usage_mb,
           gc_stats: gc_stats,
@@ -285,18 +285,6 @@ module DeadBro
       end
     rescue
       []
-    end
-
-    def self.safe_host
-      if defined?(Rails) && Rails.respond_to?(:application)
-        begin
-          Rails.application.class.module_parent_name
-        rescue
-          ""
-        end
-      else
-        ""
-      end
     end
 
     def self.memory_usage_mb

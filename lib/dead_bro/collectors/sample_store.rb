@@ -86,15 +86,7 @@ module DeadBro
       end
 
       def redis_key(key)
-        env = DeadBro.env
-        host = begin
-          require "socket"
-          Socket.gethostname
-        rescue
-          "unknown"
-        end
-
-        "dead_bro:metrics:#{env}:#{host}:#{key}"
+        "dead_bro:metrics:#{DeadBro.env}:#{DeadBro.safe_hostname}:#{key}"
       end
 
       def file_path(key)
