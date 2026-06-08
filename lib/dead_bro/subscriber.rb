@@ -165,6 +165,7 @@ module DeadBro
           method: data[:method],
           path: safe_path(data),
           status: data[:status],
+          started_at: started.utc.iso8601(3),
           duration_ms: duration_ms,
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],

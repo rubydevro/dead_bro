@@ -14,13 +14,21 @@ Add to your Gemfile:
 gem "dead_bro", git: "https://github.com/rubydevro/dead_bro.git"
 ```
 
+Then run the install generator to create the initializer:
+
+```sh
+bin/rails generate dead_bro:install
+```
+
+This creates `config/initializers/dead_bro.rb`. Set `DEAD_BRO_API_KEY` in your environment and you're done.
+
 ## Usage
 
 By default, if Rails is present, DeadBro auto-subscribes to `process_action.action_controller` and posts metrics asynchronously.
 
 ### Required: API key in your app
 
-Add an initializer (for example `config/initializers/dead_bro.rb`) and set your API key from the environment, [Rails credentials](https://guides.rubyonrails.org/security.html#custom-credentials), or another secret store:
+The install generator above creates `config/initializers/dead_bro.rb` for you. If you prefer to add it manually, create the file and set your API key from the environment, [Rails credentials](https://guides.rubyonrails.org/security.html#custom-credentials), or another secret store:
 
 ```ruby
 DeadBro.configure do |config|
