@@ -111,15 +111,27 @@ module DeadBro
       return {} unless req
 
       params = req.params || {}
-      sensitive_keys = %w[password password_confirmation token secret key authorization api_key]
-      filtered = params.dup
-      sensitive_keys.each do |k|
-        filtered.delete(k)
-        filtered.delete(k.to_sym)
-      end
-      JSON.parse(JSON.dump(filtered)) # ensure JSON-safe
+      # Redact at every nesting level (e.g. user[password]) before serializing.
+      JSON.parse(JSON.dump(redact_sensitive(params)))
     rescue
       {}
+    end
+
+    # Matches a key segment so nested/prefixed/suffixed sensitive keys are caught
+    # without redacting innocent keys like passenger_count.
+    SENSITIVE_SEGMENT_RE = /(?:\A|[_\-\[])(password|passwd|secret|token|api_?key|access_?key|auth|authorization|credential|ssn|credit_?card|card_?number|cvv|cvc)(?:\z|[_\-\]])/i
+
+    def redact_sensitive(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(k, v), memo|
+          memo[k] = SENSITIVE_SEGMENT_RE.match?(k.to_s) ? "[FILTERED]" : redact_sensitive(v)
+        end
+      when Array
+        value.map { |v| redact_sensitive(v) }
+      else
+        value
+      end
     end
 
     def truncate(str, max)

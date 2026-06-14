@@ -3,6 +3,26 @@
 ### Added
 - Monitor thread now sends a synchronous heartbeat on startup before the first collection tick. This ensures remote settings — including `monitor_enabled` — are applied from the very first reporting cycle, so Sidekiq workers and other non-web processes that have not yet sent any metrics still receive the correct configuration immediately on boot rather than waiting up to 60 seconds for the first scheduled tick.
 
+## [0.2.25] - 2026-06-14
+
+### Added
+- **Memory diagnostics for "what is allocating all this memory?"** A request can grow RSS by hundreds of MB while instantiating only a few thousand ActiveRecord objects — the existing AR object count cannot explain it because the memory lives in transient strings/hashes (e.g. deserialized Elasticsearch responses, large JSON response bodies), not AR models. These additions localize that growth. They are organised into two performance tiers so the default path stays fast:
+
+  **Under `memory_tracking_enabled` (~0.1ms overhead, on by default):**
+  - **Retained-vs-transient GC signals.** `GcTracker` now enriches the per-request `gc_pressure` payload with three additional `GC.stat`-derived fields:
+    - `heap_live_slots_growth` — net change in live heap slots over the request. A small value alongside a large `allocated_objects` means the memory was *transient* (allocated then reclaimed by GC, with RSS held by allocator fragmentation); a large value means objects were *retained* — the real leak signal. This reframes a large RSS delta that the previous metrics could not characterise.
+    - `malloc_increase_bytes` / `oldmalloc_increase_bytes` — request-end gauges of memory malloc'd outside the Ruby object heap (large strings/buffers), pointing at off-heap pressure such as parsed response bodies.
+    - These fields are captured only when `memory_tracking_enabled`; the base GC pressure fields (`minor_gc_runs`, `major_gc_runs`, `allocated_objects`, `gc_time_ms`) remain always-on and unchanged.
+  - **Per-phase allocation attribution.** New `MemoryPhaseTracker` charges each request's object allocations to the phase that produced them — `sql`, `view`, or `elasticsearch` — emitted as a new `allocation_phases` field on the request payload (e.g. `{ elasticsearch: 412_000, sql: 9_000, view: 2_500 }`). Attribution is **exclusive**: a `sql.active_record` event nested inside a view render is charged only to `:sql`, never double-counted into `:view`, via a thread-local stack that pauses the parent phase while a child is active. Whatever isn't captured by an instrumented phase is controller/application code and is derivable on the backend as `gc_pressure.allocated_objects` minus the sum of the buckets. Overhead is two single-key `GC.stat(:total_allocated_objects)` reads per instrumented event (no hash allocation); listeners are installed at boot but no-op via a thread-local check unless a request opts in.
+
+  **Under `allocation_tracking_enabled` + the new `allocation_sample_rate` (~2–5ms overhead, off by default):**
+  - **By-bytes object-type breakdown.** New `AllocationSourceSampler` produces `memsize_by_type` — total retained bytes summed per Ruby class via `ObjectSpace.memsize_of`. This catches the "death by a million small strings" pattern (each object well under any size threshold, but enormous in aggregate) that the existing >1MB single-object scan structurally misses.
+  - **Allocation-source attribution.** `allocation_sources` reports the top allocation sites (`file:line`) by retained bytes, using `ObjectSpace.trace_object_allocations`. This is the gold-standard "this line allocated 300MB" answer. The expensive heap walk is additionally gated on actual memory growth (`memory_growth_mb >= 50` by default), so even with the flag on, a request that didn't move memory pays nothing for the walk. Sampled object counts/bytes are reported alongside `allocation_sample_rate` so consumers can extrapolate to the full heap.
+  - **`allocation_sample_rate` configuration (default `100`, remote-manageable).** When allocation tracking is enabled, the heavy per-request work now runs on this percentage of requests, so the cost can be capped across traffic instead of being all-or-nothing. The decision is made once at request start (`Configuration#allocation_tracking_active?`) and cached in a thread-local so the matching stop agrees with the start.
+
+### Changed
+- **`objspace` is now loaded only under `allocation_tracking_enabled`.** `ObjectSpace.memsize_of`, `trace_object_allocations_*`, and `allocation_source*` live in the `objspace` stdlib extension, which is not loaded by default. It is now required exclusively via `AllocationSourceSampler` (loaded only under the allocation flag), keeping the heavyweight extension off the default and memory-tracking paths. As a consequence, the gem's pre-existing large-object scan (in `MemoryTrackingSubscriber` / `DeadBro.analyze`), which also depends on `ObjectSpace.memsize_of`, likewise functions only when allocation tracking is enabled — consistent with it already living behind that flag.
+
 ## [0.2.21] - 2026-06-02
 
 ### Added

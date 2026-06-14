@@ -19,6 +19,8 @@ module DeadBro
   autoload :MemoryLeakDetector, "dead_bro/memory_leak_detector"
   autoload :LightweightMemoryTracker, "dead_bro/lightweight_memory_tracker"
   autoload :GcTracker, "dead_bro/gc_tracker"
+  autoload :MemoryPhaseTracker, "dead_bro/memory_phase_tracker"
+  autoload :AllocationSourceSampler, "dead_bro/allocation_source_sampler"
   autoload :ArObjectTracker, "dead_bro/ar_object_tracker"
   autoload :CpuTracker, "dead_bro/cpu_tracker"
   autoload :MemoryHelpers, "dead_bro/memory_helpers"

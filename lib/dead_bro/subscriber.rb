@@ -79,10 +79,34 @@ module DeadBro
         view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
         view_performance = DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
 
-        # Stop memory tracking and get collected memory data
-        if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
+        # Per-phase allocation attribution (under memory tracking) — which phase
+        # allocated the request's objects (sql / view / elasticsearch).
+        allocation_phases = if DeadBro.configuration.memory_tracking_enabled && defined?(DeadBro::MemoryPhaseTracker)
+          DeadBro::MemoryPhaseTracker.stop_request_tracking
+        else
+          {}
+        end
+
+        # Stop memory tracking and get collected memory data. The decision to do
+        # heavy allocation tracking was made (and sampled) at request start.
+        if Thread.current[:dead_bro_alloc_active] && defined?(DeadBro::MemoryTrackingSubscriber)
           detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
           memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
+
+          # Allocation-source + by-bytes-type diagnostics. Read the trace data
+          # before stopping the sampler (stop clears the source locations).
+          if defined?(DeadBro::AllocationSourceSampler)
+            growth = (detailed_memory[:memory_after].to_f - detailed_memory[:memory_before].to_f)
+            source_analysis = DeadBro::AllocationSourceSampler.analyze(memory_growth_mb: growth)
+            DeadBro::AllocationSourceSampler.stop
+            if source_analysis.is_a?(Hash) && source_analysis.any?
+              memory_performance[:allocation_sources] = source_analysis[:by_source]
+              memory_performance[:memsize_by_type] = source_analysis[:by_type_bytes]
+              memory_performance[:allocation_sample_rate] = source_analysis[:sample_rate]
+              memory_performance[:allocation_sources_skipped] = source_analysis[:skipped] if source_analysis[:skipped]
+            end
+          end
+
           # Keep memory_events compact and user-friendly (no large raw arrays)
           memory_events = {
             memory_before: detailed_memory[:memory_before],
@@ -189,6 +213,7 @@ module DeadBro
           view_performance: view_performance,
           memory_events: memory_events,
           memory_performance: memory_performance,
+          allocation_phases: allocation_phases,
           rack_duration_ms: rack_duration_ms,
           queue_duration_ms: Thread.current[:dead_bro_queue_duration_ms],
           db_connection_wait_ms: db_connection_stats[:wait_ms],
@@ -212,9 +237,12 @@ module DeadBro
       DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
       DeadBro::ViewRenderingSubscriber.stop_request_tracking if defined?(DeadBro::ViewRenderingSubscriber)
       DeadBro::LightweightMemoryTracker.stop_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
-      if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
-        DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+      DeadBro::MemoryPhaseTracker.stop_request_tracking if defined?(DeadBro::MemoryPhaseTracker)
+      if Thread.current[:dead_bro_alloc_active]
+        DeadBro::MemoryTrackingSubscriber.stop_request_tracking if defined?(DeadBro::MemoryTrackingSubscriber)
+        DeadBro::AllocationSourceSampler.stop if defined?(DeadBro::AllocationSourceSampler)
       end
+      Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[:dead_bro_http_events] = nil
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
@@ -247,14 +275,11 @@ module DeadBro
       # Remove router-provided keys that we already send at top-level
       router_keys = %w[controller action format]
 
-      # Filter out sensitive parameters
-      sensitive_keys = %w[password password_confirmation token secret key]
-
       filtered = params.dup
       router_keys.each { |k| filtered.delete(k) || filtered.delete(k.to_sym) }
-      filtered = filtered.except(*sensitive_keys, *sensitive_keys.map(&:to_sym)) if filtered.respond_to?(:except)
 
-      # Truncate deeply to keep payload small and safe
+      # Truncate deeply to keep payload small and safe. truncate_value also redacts
+      # sensitive keys at every nesting level (e.g. user[password]).
       truncate_value(filtered)
     rescue
       {}
@@ -264,7 +289,18 @@ module DeadBro
       str.to_s.gsub("\x00", "")
     end
 
-    # Recursively truncate values to reasonable sizes to avoid huge payloads
+    # Matched against a key segment (delimited by start/end, underscore, dash, or
+    # bracket) so nested and prefixed/suffixed keys are caught — e.g. user[password],
+    # access_token, client_secret — without redacting innocent keys like
+    # passenger_count or cardinality.
+    SENSITIVE_SEGMENT_RE = /(?:\A|[_\-\[])(password|passwd|secret|token|api_?key|access_?key|auth|authorization|credential|ssn|credit_?card|card_?number|cvv|cvc)(?:\z|[_\-\]])/i
+
+    def self.sensitive_key?(key)
+      SENSITIVE_SEGMENT_RE.match?(key.to_s)
+    end
+
+    # Recursively truncate values to reasonable sizes to avoid huge payloads, and
+    # redact values whose key looks sensitive at any nesting level.
     def self.truncate_value(value, max_str: 200, max_array: 20, max_hash_keys: 30)
       case value
       when String
@@ -277,7 +313,7 @@ module DeadBro
       when Hash
         entries = value.to_a[0, max_hash_keys]
         entries.each_with_object({}) do |(k, v), memo|
-          memo[k] = truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys)
+          memo[k] = sensitive_key?(k) ? "[FILTERED]" : truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys)
         end
       else
         (value.to_s.length > max_str) ? value.to_s[0, max_str] + "…" : value.to_s
