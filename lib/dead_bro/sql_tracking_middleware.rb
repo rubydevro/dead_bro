@@ -46,9 +46,16 @@ module DeadBro
         DeadBro::LightweightMemoryTracker.start_request_tracking
       end
 
-      # Start detailed memory tracking when allocation tracking is enabled
-      if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
-        DeadBro::MemoryTrackingSubscriber.start_request_tracking
+      # Decide once whether this request pays for heavy allocation tracking
+      # (flag + per-request sampling). Cache the decision so the matching stop
+      # in Subscriber agrees with this start.
+      alloc_active = DeadBro.configuration.allocation_tracking_active?
+      Thread.current[:dead_bro_alloc_active] = alloc_active
+
+      # Start detailed memory + allocation-source tracking when active
+      if alloc_active
+        DeadBro::MemoryTrackingSubscriber.start_request_tracking if defined?(DeadBro::MemoryTrackingSubscriber)
+        DeadBro::AllocationSourceSampler.start if defined?(DeadBro::AllocationSourceSampler)
       end
 
       # Start Elasticsearch tracking for this request
@@ -63,6 +70,11 @@ module DeadBro
 
       # Start GC pressure tracking — snapshot before any app code runs
       DeadBro::GcTracker.start_request_tracking if defined?(DeadBro::GcTracker)
+
+      # Start per-phase allocation attribution (~0.1ms; under memory tracking)
+      if DeadBro.configuration.memory_tracking_enabled && defined?(DeadBro::MemoryPhaseTracker)
+        DeadBro::MemoryPhaseTracker.start_request_tracking
+      end
 
       # Start AR object instantiation counting for this request
       DeadBro::ArObjectTracker.start_request_tracking if defined?(DeadBro::ArObjectTracker)
@@ -110,6 +122,13 @@ module DeadBro
       # Bypass stop_request_tracking intentionally — cleanup only, no return value needed here.
       Thread.current[DeadBro::ArObjectTracker::THREAD_KEY] = nil if defined?(DeadBro::ArObjectTracker)
       Thread.current[DeadBro::CpuTracker::THREAD_KEY] = nil if defined?(DeadBro::CpuTracker)
+      Thread.current[DeadBro::MemoryPhaseTracker::THREAD_KEY] = nil if defined?(DeadBro::MemoryPhaseTracker)
+      # Safety net: ensure allocation tracing is never left running across
+      # requests (Subscriber normally stops it after analyzing).
+      if Thread.current[:dead_bro_alloc_active]
+        DeadBro::AllocationSourceSampler.stop if defined?(DeadBro::AllocationSourceSampler)
+      end
+      Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end
 

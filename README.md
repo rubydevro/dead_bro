@@ -263,15 +263,16 @@ Usually managed in the dashboard; Ruby example:
 DeadBro.configure do |config|
   config.memory_tracking_enabled = true        # Enable lightweight memory tracking (default: true)
   config.allocation_tracking_enabled = false   # Enable detailed allocation tracking (default: false)
-  
+  config.allocation_sample_rate = 100          # % of requests that pay for allocation tracking when enabled (1-100, default: 100)
+
   # Sampling configuration
   config.sample_rate = 100                     # Percentage of requests to track (1-100, default: 100)
 end
 ```
 
 **Performance Impact:**
-- **Lightweight mode**: ~0.1ms overhead per request
-- **Allocation tracking**: ~2-5ms overhead per request (only enable when needed)
+- **Lightweight mode** (`memory_tracking_enabled`, ~0.1ms overhead per request): RSS before/after, GC pressure, the retained-vs-transient signals (`heap_live_slots_growth`, `malloc_increase_bytes`), and per-phase allocation attribution (`allocation_phases` — which of `sql`/`view`/`elasticsearch` allocated the request's objects).
+- **Allocation tracking** (`allocation_tracking_enabled`, ~2-5ms overhead per request — only enable when needed): adds by-bytes object-type breakdown (`memsize_by_type`) and allocation-source attribution (`allocation_sources`, `file:line`) using the `objspace` extension, which is loaded only on this path. Use `allocation_sample_rate` to spread that cost across a fraction of traffic.
 
 ## Job Tracking
 

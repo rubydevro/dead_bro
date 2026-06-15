@@ -16,6 +16,18 @@ RSpec.describe DeadBro::GcTracker do
       allow(GC).to receive(:stat).and_raise(RuntimeError)
       expect(described_class.snapshot).to eq({})
     end
+
+    it "includes memory-tracking enrichment when enabled" do
+      allow(DeadBro.configuration).to receive(:memory_tracking_enabled).and_return(true)
+      expect(described_class.snapshot).to include(:heap_live_slots, :malloc_increase_bytes, :oldmalloc_increase_bytes)
+    end
+
+    it "omits enrichment fields when memory tracking is disabled" do
+      allow(DeadBro.configuration).to receive(:memory_tracking_enabled).and_return(false)
+      snap = described_class.snapshot
+      expect(snap).to include(:minor_gc_count, :total_allocated_objects)
+      expect(snap).not_to have_key(:heap_live_slots)
+    end
   end
 
   describe ".diff" do
@@ -27,6 +39,26 @@ RSpec.describe DeadBro::GcTracker do
       expect(result[:minor_gc_runs]).to eq(3)
       expect(result[:major_gc_runs]).to eq(1)
       expect(result[:allocated_objects]).to eq(200)
+    end
+
+    it "computes heap_live_slots_growth (retained vs transient signal)" do
+      b = before.merge(heap_live_slots: 100_000)
+      a = after.merge(heap_live_slots: 100_500)
+      expect(described_class.diff(b, a)[:heap_live_slots_growth]).to eq(500)
+    end
+
+    it "reports malloc gauges from the after snapshot" do
+      b = before.merge(heap_live_slots: 100_000)
+      a = after.merge(heap_live_slots: 100_500, malloc_increase_bytes: 4_096, oldmalloc_increase_bytes: 8_192)
+      result = described_class.diff(b, a)
+      expect(result[:malloc_increase_bytes]).to eq(4_096)
+      expect(result[:oldmalloc_increase_bytes]).to eq(8_192)
+    end
+
+    it "omits enrichment fields when snapshot keys are absent (memory tracking off)" do
+      result = described_class.diff(before, after)
+      expect(result).not_to have_key(:heap_live_slots_growth)
+      expect(result).not_to have_key(:malloc_increase_bytes)
     end
 
     it "converts gc_time_ns to gc_time_ms" do

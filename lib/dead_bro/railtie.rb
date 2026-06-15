@@ -44,6 +44,11 @@ if defined?(Rails) && defined?(Rails::Railtie)
           require "dead_bro/ar_object_tracker"
           DeadBro::ArObjectTracker.subscribe!
 
+          # Install per-phase allocation attribution. Listeners are cheap and
+          # no-op unless a request opts in (gated on memory_tracking_enabled).
+          require "dead_bro/memory_phase_tracker"
+          DeadBro::MemoryPhaseTracker.subscribe!
+
           # Install view rendering tracking
           require "dead_bro/view_rendering_subscriber"
           DeadBro::ViewRenderingSubscriber.subscribe!(client: shared_client)
@@ -53,10 +58,13 @@ if defined?(Rails) && defined?(Rails::Railtie)
           require "dead_bro/memory_leak_detector"
           DeadBro::MemoryLeakDetector.initialize_history
 
-          # Install detailed memory tracking only if enabled
+          # Install detailed memory + allocation-source tracking only if
+          # enabled. This is also where `objspace` gets loaded (via the
+          # sampler), so the heavyweight extension stays off the default path.
           if DeadBro.configuration.allocation_tracking_enabled
             require "dead_bro/memory_tracking_subscriber"
             DeadBro::MemoryTrackingSubscriber.subscribe!(client: shared_client)
+            require "dead_bro/allocation_source_sampler"
           end
 
           # Install job tracking if ActiveJob is available

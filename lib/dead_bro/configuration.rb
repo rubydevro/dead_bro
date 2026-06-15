@@ -10,7 +10,7 @@ module DeadBro
       :circuit_breaker_retry_timeout, :disk_paths, :interfaces_ignore
 
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
-    attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled,
+    attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
       :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled,
       :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
       :max_sql_queries_to_send, :max_logs_to_send
@@ -55,7 +55,7 @@ module DeadBro
     ].freeze
 
     REMOTE_SETTING_KEYS = %w[
-      enabled sample_rate memory_tracking_enabled allocation_tracking_enabled
+      enabled sample_rate memory_tracking_enabled allocation_tracking_enabled allocation_sample_rate
       explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
@@ -79,6 +79,10 @@ module DeadBro
       @sample_rate = 100
       @memory_tracking_enabled = true
       @allocation_tracking_enabled = false
+      # When allocation tracking is on, the heavy per-request work (object-space
+      # sampling, allocation-source tracing) runs on this % of requests so the
+      # ~2-5ms overhead can be capped without turning the feature fully off.
+      @allocation_sample_rate = 100
       @explain_analyze_enabled = false
       @slow_query_threshold_ms = 500
       @max_sql_queries_to_send = 500
@@ -142,7 +146,7 @@ module DeadBro
           next unless REMOTE_SETTING_KEYS.include?(k)
 
           case k
-          when "sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
+          when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
             send(:"#{k}=", value.to_i)
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
                "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
@@ -237,6 +241,20 @@ module DeadBro
 
       # Generate random number 1-100 and check if it's within sample rate
       rand(1..100) <= sample_rate
+    end
+
+    # Per-request decision: should this request pay for the heavy allocation
+    # tracking (object-space sampling + allocation-source tracing)? Combines the
+    # on/off flag with allocation_sample_rate. Decide once at request start and
+    # reuse the cached result for the matching stop, so start/stop agree.
+    def allocation_tracking_active?
+      return false unless allocation_tracking_enabled
+
+      rate = allocation_sample_rate.to_i
+      return true if rate >= 100
+      return false if rate <= 0
+
+      rand(1..100) <= rate
     end
 
     # Returns the configured sample_rate only (no ENV fallback). Use DeadBro.configure or remote settings.

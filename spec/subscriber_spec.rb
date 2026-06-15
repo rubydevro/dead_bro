@@ -83,11 +83,26 @@ RSpec.describe DeadBro::Subscriber do
       expect(described_class.safe_params({})).to eq({})
     end
 
-    it "filters sensitive keys" do
+    it "redacts sensitive keys" do
       data = { params: { "password" => "secret", "name" => "alice" } }
       result = described_class.safe_params(data)
-      expect(result).not_to have_key("password")
+      expect(result["password"]).to eq("[FILTERED]")
       expect(result["name"]).to eq("alice")
+    end
+
+    it "redacts sensitive keys nested at any level" do
+      data = { params: { "user" => { "password" => "secret", "api_key" => "abc", "email" => "a@b.co" } } }
+      result = described_class.safe_params(data)
+      expect(result["user"]["password"]).to eq("[FILTERED]")
+      expect(result["user"]["api_key"]).to eq("[FILTERED]")
+      expect(result["user"]["email"]).to eq("a@b.co")
+    end
+
+    it "does not redact innocent keys that merely contain a sensitive substring" do
+      data = { params: { "passenger_count" => 3, "cardinality" => 7 } }
+      result = described_class.safe_params(data)
+      expect(result["passenger_count"]).to eq(3)
+      expect(result["cardinality"]).to eq(7)
     end
   end
 end
