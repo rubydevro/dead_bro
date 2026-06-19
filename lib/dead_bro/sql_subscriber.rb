@@ -50,6 +50,21 @@ module DeadBro
       stack.last
     end
 
+    # Sum of SQL counts and durations recorded so far in the active tracking
+    # context. Used by WatchTracker to attribute SQL to a DeadBro.watch block.
+    def self.current_sql_metrics
+      agg_stack = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
+      aggregates_h = (agg_stack.is_a?(Array) && agg_stack.any?) ? agg_stack.last : {}
+      return {count: 0, duration_ms: 0.0} unless aggregates_h.is_a?(Hash) && aggregates_h.any?
+
+      {
+        count: aggregates_h.values.sum { |a| (a[:count] || 0).to_i },
+        duration_ms: aggregates_h.values.sum { |a| (a[:total_duration_ms] || 0.0).to_f }.round(2)
+      }
+    rescue StandardError
+      {count: 0, duration_ms: 0.0}
+    end
+
     # Check if we should continue tracking based on count and time limits
     def self.should_continue_tracking?(current_queries_array, max_count)
       return false unless current_queries_array.is_a?(Array)

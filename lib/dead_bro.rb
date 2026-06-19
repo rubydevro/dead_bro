@@ -29,6 +29,7 @@ module DeadBro
   autoload :Monitor, "dead_bro/monitor"
   autoload :MemoryDetails, "dead_bro/memory_details"
   autoload :Logger, "dead_bro/logger"
+  autoload :WatchTracker, "dead_bro/watch_tracker"
   begin
     require "dead_bro/railtie"
   rescue LoadError
@@ -456,5 +457,24 @@ module DeadBro
 
     raise error if error
     analysis_result
+  end
+
+  # Time a named block during an instrumented request or background job.
+  #
+  # When watch_enabled is on and tracking is active (web request or job),
+  # records elapsed time, optional tags, nested SQL count/duration, and errors
+  # as watch_events in the APM payload for the Request Trace waterfall.
+  #
+  # When disabled or outside an instrumented context, yields with no overhead
+  # beyond a single config check.
+  #
+  # Usage:
+  #   DeadBro.watch("load users") { User.where(active: true).load }
+  #   DeadBro.watch("sync billing", customer_id: user.id) { sync!(user) }
+  #
+  # Compare to DeadBro.analyze — analyze is local-only console profiling;
+  # watch spans are sent to the DeadBro dashboard when enabled.
+  def self.watch(label = nil, **tags, &block)
+    WatchTracker.watch(label, **tags, &block)
   end
 end

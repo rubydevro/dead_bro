@@ -11,7 +11,7 @@ module DeadBro
 
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
-      :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled,
+      :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled, :watch_enabled,
       :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
       :max_sql_queries_to_send, :max_logs_to_send
 
@@ -57,7 +57,7 @@ module DeadBro
     REMOTE_SETTING_KEYS = %w[
       enabled sample_rate memory_tracking_enabled allocation_tracking_enabled allocation_sample_rate
       explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
-      excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
+      watch_enabled excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
     ].freeze
 
@@ -87,6 +87,7 @@ module DeadBro
       @slow_query_threshold_ms = 500
       @max_sql_queries_to_send = 500
       @max_logs_to_send = 100
+      @watch_enabled = false
       self.excluded_controllers = []
       self.excluded_jobs = []
       self.exclusive_controllers = []
@@ -149,7 +150,7 @@ module DeadBro
           when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
             send(:"#{k}=", value.to_i)
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
-               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
+               "watch_enabled", "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))
@@ -168,6 +169,10 @@ module DeadBro
       return false unless t
 
       Time.now.utc < t
+    end
+
+    def watch_enabled?
+      !!@watch_enabled
     end
 
     def resolve_deploy_id

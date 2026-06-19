@@ -82,6 +82,9 @@ module DeadBro
       # Start CPU time tracking for this request (thread-local clock)
       DeadBro::CpuTracker.start_request_tracking if defined?(DeadBro::CpuTracker)
 
+      # Start user-defined watch block tracking for this request
+      DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
+
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
 

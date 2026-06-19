@@ -59,6 +59,7 @@ module DeadBro
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
           DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+          DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
           if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
             DeadBro::MemoryTrackingSubscriber.start_request_tracking
           else
@@ -71,6 +72,7 @@ module DeadBro
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
         gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
         ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
+        watch_events = defined?(DeadBro::WatchTracker) ? DeadBro::WatchTracker.stop_request_tracking : []
 
         # Stop memory tracking and get collected memory data
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
@@ -121,6 +123,7 @@ module DeadBro
           gc_stats: gc_stats,
           memory_events: memory_events,
           memory_performance: memory_performance,
+          watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
 
@@ -156,6 +159,7 @@ module DeadBro
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
           DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+          DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
           if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
             DeadBro::MemoryTrackingSubscriber.start_request_tracking
           else
@@ -168,6 +172,7 @@ module DeadBro
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
         gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
         ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
+        watch_events = defined?(DeadBro::WatchTracker) ? DeadBro::WatchTracker.stop_request_tracking : []
 
         # Stop memory tracking and get collected memory data
         if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
@@ -221,6 +226,7 @@ module DeadBro
           gc_stats: gc_stats,
           memory_events: memory_events,
           memory_performance: memory_performance,
+          watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
 
@@ -242,6 +248,7 @@ module DeadBro
       if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
         DeadBro::MemoryTrackingSubscriber.stop_request_tracking
       end
+      DeadBro::WatchTracker.stop_request_tracking if defined?(DeadBro::WatchTracker)
     rescue
       # Best effort
     end
