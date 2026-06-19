@@ -465,6 +465,11 @@ module DeadBro
   # records elapsed time, optional tags, nested SQL count/duration, and errors
   # as watch_events in the APM payload for the Request Trace waterfall.
   #
+  # Nested watch blocks: each span's sql_count/sql_duration_ms is the SQL that
+  # ran while that block was active. Parent spans include SQL from nested child
+  # spans (inclusive). Inner spans show their own slice; do not add parent and
+  # child SQL counts together.
+  #
   # When disabled or outside an instrumented context, yields with no overhead
   # beyond a single config check.
   #

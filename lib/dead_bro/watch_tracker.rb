@@ -5,6 +5,12 @@ module DeadBro
   # request or background job. Spans include wall duration, nesting depth, and
   # SQL attributable to the block (delta from SqlSubscriber aggregates).
   #
+  # SQL attribution: each span diffs the global SQL counter at block entry vs
+  # exit. Nested blocks each get their own diff; a parent span's sql_count /
+  # sql_duration_ms therefore includes queries run inside nested child spans
+  # (inclusive totals, not exclusive). Compare inner spans when you need
+  # per-block SQL; do not sum parent and child counts.
+  #
   # Unlike DeadBro.analyze, watch spans are sent to the DeadBro backend as part
   # of the normal request/job payload when watch_enabled is on.
   module WatchTracker
