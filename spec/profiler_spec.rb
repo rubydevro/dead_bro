@@ -54,6 +54,47 @@ RSpec.describe DeadBro::Profiler do
     end
   end
 
+  # Real end-to-end capture against the actual stackprof C extension. Skipped
+  # automatically where stackprof can't load (and on the prod Linux gate this is
+  # the real path). stackprof is in the gem's Gemfile for exactly this.
+  context "with the real stackprof extension", if: (require("stackprof") rescue false) do
+    around do |example|
+      real = DeadBro::Profiler.respond_to?(:available?)
+      DeadBro::Profiler.define_singleton_method(:available?) { true }
+      example.run
+    ensure
+      DeadBro::Profiler.singleton_class.send(:remove_method, :available?)
+    end
+
+    after { Thread.current[described_class::MODE_KEY] = nil }
+
+    def fib(n) = n < 2 ? n : fib(n - 1) + fib(n - 2)
+
+    it "captures a real wall-mode profile and summarizes it" do
+      expect(described_class.start(:wall)).to be(true)
+      Thread.current[described_class::MODE_KEY] = :wall
+      5.times { fib(25) }
+      result = described_class.collect(max_bytes: 5_000_000)
+
+      expect(result[:mode]).to eq("wall")
+      expect(result[:summary][:sample_count]).to be > 0
+      expect(result[:raw]).to be_a(Hash)
+      expect(result[:raw][:frames]).to be_a(Hash)
+      expect(result[:raw][:raw]).to be_an(Array)
+      expect(Thread.current[described_class::MODE_KEY]).to be_nil
+    end
+
+    it "drops the raw blob over the cap but keeps the summary" do
+      described_class.start(:wall)
+      Thread.current[described_class::MODE_KEY] = :wall
+      5.times { fib(25) }
+      result = described_class.collect(max_bytes: 50)
+      expect(result[:raw]).to be_nil
+      expect(result[:raw_dropped]).to be(true)
+      expect(result[:summary][:sample_count]).to be > 0
+    end
+  end
+
   context "when stackprof is available (stubbed)" do
     let(:fake_dump) do
       {samples: 4, frames: {1 => {name: "App#work", samples: 4, total_samples: 4}}}
