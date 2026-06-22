@@ -111,6 +111,16 @@ if defined?(Rails) && defined?(Rails::Railtie)
       rescue
         # Never raise in Railtie init
       end
+
+      # Insert the sampling-profiler middleware innermost (after SQL tracking) so
+      # it wraps controller execution. No-op unless stackprof is available and
+      # the backend has enabled profiling for a sampled request.
+      initializer "dead_bro.profiling_middleware" do |app|
+        require "dead_bro/profiling_middleware"
+        app.config.middleware.use(::DeadBro::ProfilingMiddleware)
+      rescue
+        # Never raise in Railtie init
+      end
     end
   end
 end

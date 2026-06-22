@@ -13,7 +13,8 @@ module DeadBro
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
       :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled,
       :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
-      :max_sql_queries_to_send, :max_logs_to_send
+      :max_sql_queries_to_send, :max_logs_to_send,
+      :profile_enabled, :profile_sample_rate, :profile_max_bytes
 
     # Readers for exclusion lists. Writers are defined below so we can compile
     # and cache the regex form once, instead of rebuilding it per request.
@@ -59,6 +60,7 @@ module DeadBro
       explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
+      profile_enabled profile_sample_rate profile_max_bytes
     ].freeze
 
     def initialize
@@ -95,6 +97,13 @@ module DeadBro
       @enable_db_stats = false
       @enable_process_stats = false
       @enable_system_stats = false
+
+      # Sampling call-stack profiler (stackprof). Off by default; the backend
+      # turns it on for a low % of requests. profile_max_bytes caps the
+      # serialized raw dump that rides the request payload (~1 MB).
+      @profile_enabled = false
+      @profile_sample_rate = 0
+      @profile_max_bytes = 1_000_000
 
       @settings_received_at = nil
       @skip_until = nil
@@ -146,10 +155,11 @@ module DeadBro
           next unless REMOTE_SETTING_KEYS.include?(k)
 
           case k
-          when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
+          when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send",
+               "profile_sample_rate", "profile_max_bytes"
             send(:"#{k}=", value.to_i)
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
-               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
+               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats", "profile_enabled"
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))
@@ -251,6 +261,21 @@ module DeadBro
       return false unless allocation_tracking_enabled
 
       rate = allocation_sample_rate.to_i
+      return true if rate >= 100
+      return false if rate <= 0
+
+      rand(1..100) <= rate
+    end
+
+    # Per-request decision: should this request be profiled with stackprof?
+    # Combines the on/off flag, profiler availability (Linux + gem present), and
+    # profile_sample_rate. Decide once at request start so the matching stop
+    # agrees with this start.
+    def profile_active?
+      return false unless profile_enabled
+      return false unless DeadBro::Profiler.available?
+
+      rate = profile_sample_rate.to_i
       return true if rate >= 100
       return false if rate <= 0
 
