@@ -17,3 +17,8 @@ gem "simplecov", "~> 0.22", require: false
 # For testing ActiveSupport::Notifications functionality
 gem "activesupport", "~> 7.1.0", require: false
 gem "minitest", "< 5.25"
+
+# Optional runtime dependency (the sampling profiler). Pulled in for the test
+# suite so the real capture path can be exercised on Linux CI; the gem itself
+# soft-requires it and no-ops when absent (see DeadBro::Profiler).
+gem "stackprof", require: false

@@ -51,6 +51,14 @@ module DeadBro
 
         duration_ms = ((finished - started) * 1000.0).round(2)
 
+        # Stop the sampling profiler started by ProfilingMiddleware and build the
+        # profile payload (summary + capped raw dump). nil unless this request
+        # was selected for profiling. Collected here so the boundary covers
+        # controller + view rendering. Attached to the error or normal payload.
+        profile = if defined?(DeadBro::Profiler)
+          DeadBro::Profiler.collect(max_bytes: DeadBro.configuration.profile_max_bytes)
+        end
+
         # Time spent in Rack middleware before ActionController took over (routing, session, auth, etc.)
         rack_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         rack_duration_ms = rack_start ? ([((started - rack_start) * 1000.0), 0].max).round(2) : nil
@@ -171,6 +179,7 @@ module DeadBro
               fingerprint: compute_error_fingerprint(exception_obj),
               cause_chain: build_cause_chain(exception_obj),
               error: true,
+              profile: profile,
               logs: DeadBro.logger.logs
             }
 
@@ -221,6 +230,7 @@ module DeadBro
           gc_pressure: gc_pressure,
           ar_instantiation_count: ar_instantiation_count,
           cpu_time_ms: cpu_time_ms,
+          profile: profile,
           logs: DeadBro.logger.logs
         }
         client.post_metric(event_name: name, payload: payload)
@@ -231,6 +241,7 @@ module DeadBro
     # a payload (disabled / excluded / sampled out). Without this, a subsequent
     # request reusing the same Puma thread would see stale queries/events.
     def self.drain_request_tracking
+      DeadBro::Profiler.discard if defined?(DeadBro::Profiler)
       DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
       DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)

@@ -23,6 +23,8 @@ module DeadBro
   autoload :AllocationSourceSampler, "dead_bro/allocation_source_sampler"
   autoload :ArObjectTracker, "dead_bro/ar_object_tracker"
   autoload :CpuTracker, "dead_bro/cpu_tracker"
+  autoload :Profiler, "dead_bro/profiler"
+  autoload :ProfilingMiddleware, "dead_bro/profiling_middleware"
   autoload :MemoryHelpers, "dead_bro/memory_helpers"
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"
