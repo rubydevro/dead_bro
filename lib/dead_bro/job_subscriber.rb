@@ -44,7 +44,8 @@ module DeadBro
         # enough that even the "cheap" stop/analyze work matters under load.
         # Completions have no exception attached; the exception subscriber below
         # always sends errors with force: true.
-        unless DeadBro.configuration.should_sample?
+        job_type_key = "#{job_class_name}#perform"
+        unless DeadBro.configuration.should_sample?(job_type_key)
           drain_job_tracking
           next
         end
@@ -124,7 +125,9 @@ module DeadBro
           logs: DeadBro.logger.logs
         }
 
-        client.post_metric(event_name: name, payload: payload)
+        # force: true — the sampling decision above already accounted for any
+        # per-job-type override; client#post_metric must not re-roll it globally.
+        client.post_metric(event_name: name, payload: payload, force: true)
       end
 
       # Track job exceptions

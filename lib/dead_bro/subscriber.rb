@@ -43,8 +43,9 @@ module DeadBro
         end
 
         has_error = data[:exception] || data[:exception_object]
+        request_type_key = "#{controller_name}##{action_name}"
         # Errors always ship regardless of sampling (this is what the docs promise).
-        unless has_error || DeadBro.configuration.should_sample?
+        unless has_error || DeadBro.configuration.should_sample?(request_type_key)
           drain_request_tracking
           next
         end
@@ -223,7 +224,10 @@ module DeadBro
           cpu_time_ms: cpu_time_ms,
           logs: DeadBro.logger.logs
         }
-        client.post_metric(event_name: name, payload: payload)
+        # force: true — the sampling decision (global or per-request-type) was
+        # already made above; client#post_metric must not re-roll it with the
+        # global-only rate, which would silently override a per-type sample rate.
+        client.post_metric(event_name: name, payload: payload, force: true)
       end
     end
 

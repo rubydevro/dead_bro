@@ -19,6 +19,10 @@ module DeadBro
     # and cache the regex form once, instead of rebuilding it per request.
     attr_reader :excluded_controllers, :excluded_jobs, :exclusive_controllers, :exclusive_jobs
 
+    # Per-request-type sample rate overrides, keyed by exact "Controller#action"
+    # (or "JobClass#perform") strings — same identity ApmRequestType uses server-side.
+    attr_reader :sample_rates_by_type
+
     # Tracks when we last received settings from the backend (in-memory only)
     attr_accessor :settings_received_at
 
@@ -59,6 +63,7 @@ module DeadBro
       explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
+      sample_rates_by_type
     ].freeze
 
     def initialize
@@ -91,6 +96,7 @@ module DeadBro
       self.excluded_jobs = []
       self.exclusive_controllers = []
       self.exclusive_jobs = []
+      self.sample_rates_by_type = {}
       @monitor_enabled = false
       @enable_db_stats = false
       @enable_process_stats = false
@@ -134,6 +140,15 @@ module DeadBro
       @compiled_exclusive_jobs = compile_patterns(@exclusive_jobs)
     end
 
+    # Exact-match only — no wildcard/regex support, unlike the exclusion lists.
+    def sample_rates_by_type=(value)
+      return @sample_rates_by_type = {} unless value.is_a?(Hash)
+
+      @sample_rates_by_type = value.each_with_object({}) do |(k, v), memo|
+        memo[k.to_s] = v.to_i
+      end
+    end
+
     # Apply a settings hash received from the backend response.
     # Only known keys are applied; unknown keys are silently ignored.
     # Serialized so concurrent HTTP threads do not interleave writes with request-thread reads.
@@ -153,6 +168,8 @@ module DeadBro
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))
+          when "sample_rates_by_type"
+            send(:"#{k}=", value)
           end
         end
       end
@@ -232,8 +249,12 @@ module DeadBro
       compiled.any? { |entry| match_compiled?(target, entry) }
     end
 
-    def should_sample?
-      sample_rate = resolve_sample_rate
+    def should_sample?(request_type_key = nil)
+      sample_rate = if request_type_key && @sample_rates_by_type.key?(request_type_key.to_s)
+        @sample_rates_by_type[request_type_key.to_s]
+      else
+        resolve_sample_rate
+      end
       sample_rate = 100 if sample_rate.nil?
 
       return true if sample_rate >= 100
