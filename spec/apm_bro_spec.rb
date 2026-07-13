@@ -796,6 +796,30 @@ RSpec.describe DeadBro do
       expect(config.enabled).to be false
     end
 
+    it "never enables EXPLAIN capture remotely — local opt-in required" do
+      expect(config.explain_analyze_active?).to be false
+
+      config.apply_remote_settings("explain_analyze_enabled" => true)
+      expect(config.explain_analyze_enabled).to be false
+      expect(config.explain_analyze_active?).to be false
+    end
+
+    it "activates EXPLAIN capture only with the local opt-in" do
+      config.explain_analyze_enabled = true
+      expect(config.explain_analyze_active?).to be true
+    end
+
+    it "allows remote settings to disable locally-enabled EXPLAIN capture" do
+      config.explain_analyze_enabled = true
+      config.apply_remote_settings("explain_analyze_enabled" => false)
+
+      expect(config.explain_analyze_active?).to be false
+      # Local opt-in itself is untouched; a later remote true restores it.
+      expect(config.explain_analyze_enabled).to be true
+      config.apply_remote_settings("explain_analyze_enabled" => true)
+      expect(config.explain_analyze_active?).to be true
+    end
+
     it "casts integer values" do
       config.apply_remote_settings("sample_rate" => "75", "max_sql_queries_to_send" => "200")
       expect(config.sample_rate).to eq(75)

@@ -9,9 +9,15 @@ module DeadBro
       :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
       :circuit_breaker_retry_timeout, :disk_paths, :interfaces_ignore
 
+    # Local-only opt-in for EXPLAIN plan capture on slow queries. The gem runs
+    # DB statements (plan-only EXPLAIN) when this is on, so it must be enabled
+    # in the app's own config — remote settings can only turn it OFF, never on
+    # (see apply_remote_settings). Effective state: #explain_analyze_active?
+    attr_accessor :explain_analyze_enabled
+
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
-      :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled,
+      :sample_rate, :slow_query_threshold_ms,
       :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
       :max_sql_queries_to_send, :max_logs_to_send
 
@@ -89,6 +95,10 @@ module DeadBro
       # ~2-5ms overhead can be capped without turning the feature fully off.
       @allocation_sample_rate = 100
       @explain_analyze_enabled = false
+      # Remote kill switch for EXPLAIN capture. Defaults to true so a local
+      # opt-in works against older backends that never send the key; any
+      # response that sends explain_analyze_enabled: false turns capture off.
+      @remote_explain_analyze_enabled = true
       @slow_query_threshold_ms = 500
       @max_sql_queries_to_send = 500
       @max_logs_to_send = 100
@@ -163,7 +173,12 @@ module DeadBro
           case k
           when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
             send(:"#{k}=", value.to_i)
-          when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
+          when "explain_analyze_enabled"
+            # EXPLAIN runs statements against the customer DB, so the backend
+            # must never be able to switch it on — only off. The local opt-in
+            # (explain_analyze_enabled) stays untouched; see #explain_analyze_active?
+            @remote_explain_analyze_enabled = !!value
+          when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled",
                "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
@@ -173,6 +188,12 @@ module DeadBro
           end
         end
       end
+    end
+
+    # EXPLAIN capture requires BOTH the local opt-in and the remote flag —
+    # locally off means off no matter what the backend sends.
+    def explain_analyze_active?
+      !!(@explain_analyze_enabled && @remote_explain_analyze_enabled)
     end
 
     def heartbeat_due?
