@@ -7,7 +7,7 @@ RSpec.describe DeadBro::Subscriber, "per-request-type sampling" do
     DeadBro.reset_configuration!
     DeadBro.configuration.enabled = true
     ActiveSupport::Notifications.unsubscribe(DeadBro::Subscriber::EVENT_NAME)
-    # Other specs (e.g. sql_subscriber_spec's start_explain_analyze_background tests)
+    # Other specs (e.g. sql_subscriber_spec's start_explain_background tests)
     # can leak a stale pending-explain thread double into this thread-local.
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
   end

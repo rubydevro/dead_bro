@@ -7,6 +7,9 @@ RSpec.describe DeadBro::SqlSubscriber do
   let(:sql_subscriber) { DeadBro::SqlSubscriber }
 
   before do
+    # Fresh config per example — several examples flip explain/remote settings
+    # on the global configuration and must not leak into each other.
+    DeadBro.reset_configuration!
     # Clear any existing subscriptions
     if defined?(ActiveSupport::Notifications)
       ActiveSupport::Notifications.unsubscribe("sql.active_record")
@@ -282,6 +285,12 @@ RSpec.describe DeadBro::SqlSubscriber do
     # Slow query should be explained
     expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users")).to be true
 
+    # SELECT with a trailing semicolon is fine
+    expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users;")).to be true
+
+    # Read-only CTEs are allowed
+    expect(sql_subscriber.should_explain_query?(600, "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent")).to be true
+
     # EXPLAIN queries should not be explained
     expect(sql_subscriber.should_explain_query?(600, "EXPLAIN SELECT * FROM users")).to be false
 
@@ -291,6 +300,34 @@ RSpec.describe DeadBro::SqlSubscriber do
     # Transaction queries should not be explained
     expect(sql_subscriber.should_explain_query?(600, "BEGIN")).to be false
     expect(sql_subscriber.should_explain_query?(600, "COMMIT")).to be false
+  end
+
+  it "never explains statements that modify data (allowlist)" do
+    DeadBro.configuration.explain_analyze_enabled = true
+
+    expect(sql_subscriber.should_explain_query?(600, "INSERT INTO users (name) VALUES ('x')")).to be false
+    expect(sql_subscriber.should_explain_query?(600, "UPDATE users SET name = 'x' WHERE id = 1")).to be false
+    expect(sql_subscriber.should_explain_query?(600, "DELETE FROM users WHERE id = 1")).to be false
+    expect(sql_subscriber.should_explain_query?(600, "DROP TABLE users")).to be false
+    expect(sql_subscriber.should_explain_query?(600, "ALTER TABLE users ADD COLUMN x int")).to be false
+    # Data-modifying CTEs are rejected even though they start with WITH
+    expect(sql_subscriber.should_explain_query?(600, "WITH gone AS (DELETE FROM users RETURNING id) SELECT * FROM gone")).to be false
+    # Multi-statement strings are rejected
+    expect(sql_subscriber.should_explain_query?(600, "SELECT 1; DELETE FROM users")).to be false
+  end
+
+  it "requires the local opt-in — remote settings alone cannot enable EXPLAIN" do
+    DeadBro.configuration.explain_analyze_enabled = false
+    DeadBro.configuration.apply_remote_settings("explain_analyze_enabled" => true)
+
+    expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users")).to be false
+  end
+
+  it "lets remote settings disable a locally-enabled EXPLAIN" do
+    DeadBro.configuration.explain_analyze_enabled = true
+    DeadBro.configuration.apply_remote_settings("explain_analyze_enabled" => false)
+
+    expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users")).to be false
   end
 
   describe ".interpolate_sql_with_binds" do
@@ -434,16 +471,16 @@ RSpec.describe DeadBro::SqlSubscriber do
   describe ".build_explain_query" do
     let(:connection) { double("Connection") }
 
-    it "uses EXPLAIN (ANALYZE, BUFFERS) for PostgreSQL" do
+    it "uses plan-only EXPLAIN for PostgreSQL (ANALYZE would execute the statement)" do
       allow(connection).to receive(:adapter_name).and_return("PostgreSQL")
       sql = "SELECT * FROM users"
-      expect(sql_subscriber.build_explain_query(sql, connection)).to eq("EXPLAIN (ANALYZE, BUFFERS) #{sql}")
+      expect(sql_subscriber.build_explain_query(sql, connection)).to eq("EXPLAIN #{sql}")
     end
 
-    it "uses EXPLAIN ANALYZE for MySQL" do
+    it "uses plan-only EXPLAIN for MySQL (ANALYZE would execute the statement)" do
       allow(connection).to receive(:adapter_name).and_return("Mysql2")
       sql = "SELECT * FROM users"
-      expect(sql_subscriber.build_explain_query(sql, connection)).to eq("EXPLAIN ANALYZE #{sql}")
+      expect(sql_subscriber.build_explain_query(sql, connection)).to eq("EXPLAIN #{sql}")
     end
 
     it "uses EXPLAIN QUERY PLAN for SQLite" do
@@ -459,7 +496,26 @@ RSpec.describe DeadBro::SqlSubscriber do
     end
   end
 
-  describe ".start_explain_analyze_background" do
+  describe ".scrub_explain_plan" do
+    it "blanks quoted string literals echoed in plan text" do
+      plan = "Index Scan on users\n  Filter: ((email)::text = 'alice@example.com'::text)"
+      scrubbed = sql_subscriber.scrub_explain_plan(plan)
+
+      expect(scrubbed).not_to include("alice@example.com")
+      expect(scrubbed).to include("Filter: ((email)::text = ?::text)")
+    end
+
+    it "leaves cost/row numbers intact" do
+      plan = "Seq Scan on users  (cost=0.00..35.50 rows=2550 width=4)"
+      expect(sql_subscriber.scrub_explain_plan(plan)).to eq(plan)
+    end
+
+    it "passes through non-strings" do
+      expect(sql_subscriber.scrub_explain_plan(nil)).to be_nil
+    end
+  end
+
+  describe ".start_explain_background" do
     let(:connection) { double("Connection", adapter_name: "PostgreSQL") }
     let(:connection_pool) { double("ConnectionPool") }
     let(:active_record) { double("ActiveRecord::Base") }
@@ -485,7 +541,7 @@ RSpec.describe DeadBro::SqlSubscriber do
       # We need to wait for the thread to complete in the test
       allow(Thread).to receive(:new).and_yield.and_return(double("Thread"))
 
-      sql_subscriber.start_explain_analyze_background("SELECT * FROM users WHERE id = $1", 123, query_info, [1])
+      sql_subscriber.start_explain_background("SELECT * FROM users WHERE id = $1", 123, query_info, [1])
 
       expect(query_info[:explain_plan]).to include("Seq Scan")
       expect(sql_subscriber).to have_received(:interpolate_sql_with_binds)

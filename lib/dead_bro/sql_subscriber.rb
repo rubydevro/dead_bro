@@ -146,7 +146,7 @@ module DeadBro
         if should_explain_query?(duration_ms, original_sql)
           query_info[:explain_plan] = nil
           binds = data[:type_casted_binds] || data[:binds]
-          start_explain_analyze_background(original_sql, data[:connection_id], query_info, binds)
+          start_explain_background(original_sql, data[:connection_id], query_info, binds)
         end
 
         if aggregates_h && normalized_key
@@ -195,8 +195,10 @@ module DeadBro
       (Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  ||= []) << {}
     end
 
-    def self.stop_request_tracking
-      wait_for_pending_explains(EXPLAIN_WAIT_TIMEOUT_SECONDS)
+    # wait_for_explains: false on drain paths (excluded / sampled-out requests)
+    # where the result is discarded — no reason to block on pending plans.
+    def self.stop_request_tracking(wait_for_explains: true)
+      wait_for_pending_explains(EXPLAIN_WAIT_TIMEOUT_SECONDS) if wait_for_explains
 
       stack = Thread.current[THREAD_LOCAL_KEY]
       raw_queries = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
@@ -227,12 +229,14 @@ module DeadBro
       aggregates_h.values.sort_by { |a| -a[:total_duration_ms] }
     end
 
-    # Upper bound on pending EXPLAIN threads per request — stops a slow-query
-    # storm from spawning unbounded background threads.
-    MAX_PENDING_EXPLAINS = 20
+    # Upper bound on pending EXPLAIN threads per request. Each thread checks
+    # out an AR pool connection, so this must stay well below common pool
+    # sizes (Rails default is 5) to avoid starving the app under a storm.
+    MAX_PENDING_EXPLAINS = 3
     # Overall wall-clock we're willing to block the request thread for pending
-    # EXPLAINs. If the plan isn't ready by then, skip it rather than stall the request.
-    EXPLAIN_WAIT_TIMEOUT_SECONDS = 5.0
+    # EXPLAINs. Plan-only EXPLAIN is planning work (typically <10ms); if a plan
+    # isn't ready by then, drop it rather than stall the request.
+    EXPLAIN_WAIT_TIMEOUT_SECONDS = 0.5
 
     def self.wait_for_pending_explains(timeout_seconds)
       pending = Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY]
@@ -246,7 +250,7 @@ module DeadBro
         begin
           thread.join(remaining_time)
         rescue => e
-          DeadBro.logger.debug("Error waiting for EXPLAIN ANALYZE: #{e.message}")
+          DeadBro.logger.debug("Error waiting for EXPLAIN plan: #{e.message}")
         end
       end
     end
@@ -276,25 +280,31 @@ module DeadBro
       sql
     end
 
+    # Read-only statements we are willing to EXPLAIN. Everything else —
+    # INSERT/UPDATE/DELETE, DDL, transaction control, EXPLAIN itself — is
+    # rejected by not matching (allowlist, not denylist).
+    EXPLAIN_ALLOWED_SQL_RE = /\A(SELECT|WITH)\b/i.freeze
+    # A WITH statement can hide data-modifying CTEs (WITH x AS (DELETE ...)).
+    # Plan-only EXPLAIN wouldn't run them, but keep them out entirely.
+    EXPLAIN_DML_KEYWORD_RE = /\b(INSERT|UPDATE|DELETE|MERGE)\b/i.freeze
+
     def self.should_explain_query?(duration_ms, sql)
-      return false unless DeadBro.configuration.explain_analyze_enabled
+      return false unless DeadBro.configuration.explain_analyze_active?
       return false if duration_ms < DeadBro.configuration.slow_query_threshold_ms
       return false unless sql.is_a?(String)
-      return false if sql.strip.empty?
 
-      # Skip EXPLAIN for certain query types that don't benefit from it
-      sql_upper = sql.upcase.strip
-      return false if sql_upper.start_with?("EXPLAIN")
-      return false if sql_upper.start_with?("BEGIN")
-      return false if sql_upper.start_with?("COMMIT")
-      return false if sql_upper.start_with?("ROLLBACK")
-      return false if sql_upper.start_with?("SAVEPOINT")
-      return false if sql_upper.start_with?("RELEASE")
+      stripped = sql.strip
+      stripped = stripped.chomp(";").rstrip
+      return false if stripped.empty?
+      # No multi-statement strings — EXPLAIN must cover exactly one statement.
+      return false if stripped.include?(";")
+      return false unless stripped.match?(EXPLAIN_ALLOWED_SQL_RE)
+      return false if stripped.match?(/\AWITH\b/i) && stripped.match?(EXPLAIN_DML_KEYWORD_RE)
 
       true
     end
 
-    def self.start_explain_analyze_background(sql, connection_id, query_info, binds = nil)
+    def self.start_explain_background(sql, connection_id, query_info, binds = nil)
       return unless defined?(ActiveRecord)
       return unless ActiveRecord::Base.respond_to?(:connection)
 
@@ -327,14 +337,14 @@ module DeadBro
               connection.execute(explain_sql)
             end
 
-            explain_plan = format_explain_result(result, connection)
+            explain_plan = scrub_explain_plan(format_explain_result(result, connection))
             query_info[:explain_plan] = if explain_plan && !explain_plan.to_s.strip.empty?
               explain_plan
             end
           end
         rescue => e
           # Silently fail — don't let EXPLAIN break the application.
-          append_log_to_thread(main_thread, :debug, "Failed to capture EXPLAIN ANALYZE: #{e.message}")
+          append_log_to_thread(main_thread, :debug, "Failed to capture EXPLAIN plan: #{e.message}")
           query_info[:explain_plan] = nil
         end
       end
@@ -342,7 +352,22 @@ module DeadBro
       pending << explain_thread
     rescue => e
       # Use DeadBro.logger here since we're still in the main thread
-      DeadBro.logger.debug("Failed to start EXPLAIN ANALYZE thread: #{e.message}")
+      DeadBro.logger.debug("Failed to start EXPLAIN thread: #{e.message}")
+    end
+
+    # Quoted string literal in plan text, e.g. Filter: ((email)::text = 'a@b.com'::text).
+    # '' is SQL escaping for a single quote inside a literal.
+    EXPLAIN_PLAN_QUOTED_LITERAL_RE = /'(?:[^']|'')*'/.freeze
+
+    # Plan text echoes the interpolated bind values in Filter / Index Cond
+    # lines, bypassing sanitize_sql. Blank out quoted literals before the plan
+    # is shipped. (Bare numbers are left alone — indistinguishable from the
+    # plan's own cost/row estimates.)
+    def self.scrub_explain_plan(plan)
+      return plan unless plan.is_a?(String)
+      plan.gsub(EXPLAIN_PLAN_QUOTED_LITERAL_RE, "?")
+    rescue
+      plan
     end
 
     # Append a log entry directly to a specific thread's log storage
@@ -389,18 +414,13 @@ module DeadBro
     def self.build_explain_query(sql, connection)
       adapter_name = connection.adapter_name.downcase
 
+      # Plan-only EXPLAIN everywhere. EXPLAIN ANALYZE *executes* the statement
+      # on PostgreSQL and MySQL 8 — a monitoring agent must never re-run
+      # customer queries, so ANALYZE is deliberately not used for any adapter.
       case adapter_name
-      when "postgresql", "postgis"
-        # PostgreSQL supports ANALYZE and BUFFERS
-        "EXPLAIN (ANALYZE, BUFFERS) #{sql}"
-      when "mysql", "mysql2", "trilogy"
-        # MySQL uses different syntax - ANALYZE is a separate keyword
-        "EXPLAIN ANALYZE #{sql}"
       when "sqlite3"
-        # SQLite supports EXPLAIN QUERY PLAN
         "EXPLAIN QUERY PLAN #{sql}"
       else
-        # Generic fallback - just EXPLAIN
         "EXPLAIN #{sql}"
       end
     end

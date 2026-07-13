@@ -235,7 +235,9 @@ module DeadBro
     # a payload (disabled / excluded / sampled out). Without this, a subsequent
     # request reusing the same Puma thread would see stale queries/events.
     def self.drain_request_tracking
-      DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
+      # wait_for_explains: false — the result is discarded, so don't block this
+      # thread waiting on pending EXPLAIN plans.
+      DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
       DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
       DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)

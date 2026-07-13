@@ -237,7 +237,8 @@ module DeadBro
     # Release job-side thread-local tracking state when we've decided not to
     # build a payload (excluded job / sampled out). Matches Subscriber.drain_request_tracking.
     def self.drain_job_tracking
-      DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
+      # wait_for_explains: false — result is discarded, don't block on pending plans.
+      DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
       DeadBro::ArObjectTracker.stop_request_tracking if defined?(DeadBro::ArObjectTracker)
