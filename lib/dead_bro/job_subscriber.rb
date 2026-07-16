@@ -59,6 +59,7 @@ module DeadBro
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
+          start_job_dependency_tracking
           DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
           if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
             DeadBro::MemoryTrackingSubscriber.start_request_tracking
@@ -69,6 +70,7 @@ module DeadBro
 
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
+        dependency_events = job_dependency_payload
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
         gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
         ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
@@ -123,7 +125,7 @@ module DeadBro
           memory_events: memory_events,
           memory_performance: memory_performance,
           logs: DeadBro.logger.logs
-        }
+        }.merge(dependency_events)
 
         # force: true — the sampling decision above already accounted for any
         # per-job-type override; client#post_metric must not re-roll it globally.
@@ -158,6 +160,7 @@ module DeadBro
           DeadBro.logger.clear
           Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
           DeadBro::SqlSubscriber.start_request_tracking
+          start_job_dependency_tracking
           DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
           if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
             DeadBro::MemoryTrackingSubscriber.start_request_tracking
@@ -168,6 +171,7 @@ module DeadBro
 
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
+        dependency_events = job_dependency_payload
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
         gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
         ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
@@ -225,7 +229,7 @@ module DeadBro
           memory_events: memory_events,
           memory_performance: memory_performance,
           logs: DeadBro.logger.logs
-        }
+        }.merge(dependency_events)
 
         event_name = exception&.class&.name || "ActiveJob::Exception"
         client.post_metric(event_name: event_name, payload: payload, force: true)
@@ -239,6 +243,11 @@ module DeadBro
     def self.drain_job_tracking
       # wait_for_explains: false — result is discarded, don't block on pending plans.
       DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
+      Thread.current[:dead_bro_http_events] = nil
+      DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
+      DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
+      DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
+      DeadBro::ViewRenderingSubscriber.stop_request_tracking if defined?(DeadBro::ViewRenderingSubscriber)
       DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
       DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
       DeadBro::ArObjectTracker.stop_request_tracking if defined?(DeadBro::ArObjectTracker)
@@ -248,6 +257,54 @@ module DeadBro
       end
     rescue
       # Best effort
+    end
+
+    # Start HTTP/Redis/cache/view/Elasticsearch tracking for job backends that never
+    # emit perform_start.active_job (so JobSqlTrackingMiddleware didn't run). Mirrors the
+    # dependency tracking the middleware normally arms — see its comment for why each
+    # thread-local must be initialized before its subscriber will record anything.
+    def self.start_job_dependency_tracking
+      Thread.current[:dead_bro_http_events] = []
+      DeadBro::CacheSubscriber.start_request_tracking if defined?(DeadBro::CacheSubscriber)
+      DeadBro::RedisSubscriber.start_request_tracking if defined?(DeadBro::RedisSubscriber)
+      DeadBro::ElasticsearchSubscriber.start_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
+      DeadBro::ViewRenderingSubscriber.start_request_tracking if defined?(DeadBro::ViewRenderingSubscriber)
+    rescue
+    end
+
+    # Snapshot and clear the per-job dependency events, returning the payload slice that
+    # mirrors what the web Subscriber sends. These feed the performance breakdown (the app
+    # derives http/redis/es duration columns from them) and the trace timeline.
+    def self.job_dependency_payload
+      http_outgoing = Thread.current[:dead_bro_http_events] || []
+      Thread.current[:dead_bro_http_events] = nil
+      cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
+      redis_events = defined?(DeadBro::RedisSubscriber) ? DeadBro::RedisSubscriber.stop_request_tracking : []
+      elasticsearch_events = defined?(DeadBro::ElasticsearchSubscriber) ? DeadBro::ElasticsearchSubscriber.stop_request_tracking : []
+      view_events = defined?(DeadBro::ViewRenderingSubscriber) ? DeadBro::ViewRenderingSubscriber.stop_request_tracking : []
+      view_performance = defined?(DeadBro::ViewRenderingSubscriber) ? DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events) : {}
+
+      {
+        http_outgoing: http_outgoing,
+        cache_events: cache_events,
+        redis_events: redis_events,
+        elasticsearch_events: elasticsearch_events,
+        view_events: view_events,
+        view_performance: view_performance,
+        view_runtime_ms: sum_view_runtime_ms(view_events)
+      }
+    rescue
+      {}
+    end
+
+    def self.sum_view_runtime_ms(view_events)
+      return nil unless view_events.is_a?(Array) && view_events.any?
+      view_events.sum do |e|
+        next 0 unless e.is_a?(Hash)
+        (e[:total_duration_ms] || e["total_duration_ms"] || e[:duration_ms] || e["duration_ms"] || 0).to_f
+      end.round(2)
+    rescue
+      nil
     end
 
     private

@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    dead_bro (0.2.26)
+    dead_bro (0.2.29)
 
 GEM
   remote: https://rubygems.org/
