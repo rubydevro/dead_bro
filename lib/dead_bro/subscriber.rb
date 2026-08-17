@@ -80,6 +80,8 @@ module DeadBro
         view_events = DeadBro::ViewRenderingSubscriber.stop_request_tracking
         view_performance = DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
 
+        watch_events = defined?(DeadBro::WatchTracker) ? DeadBro::WatchTracker.stop_request_tracking : []
+
         # Per-phase allocation attribution (under memory tracking) — which phase
         # allocated the request's objects (sql / view / elasticsearch).
         allocation_phases = if DeadBro.configuration.memory_tracking_enabled && defined?(DeadBro::MemoryPhaseTracker)
@@ -222,6 +224,7 @@ module DeadBro
           gc_pressure: gc_pressure,
           ar_instantiation_count: ar_instantiation_count,
           cpu_time_ms: cpu_time_ms,
+          watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
         # force: true — the sampling decision (global or per-request-type) was
@@ -254,6 +257,7 @@ module DeadBro
       DeadBro::GcTracker.stop_request_tracking if defined?(DeadBro::GcTracker)
       DeadBro::ArObjectTracker.stop_request_tracking if defined?(DeadBro::ArObjectTracker)
       DeadBro::CpuTracker.stop_request_tracking if defined?(DeadBro::CpuTracker)
+      DeadBro::WatchTracker.stop_request_tracking if defined?(DeadBro::WatchTracker)
     rescue
       # Best effort — draining must never raise from the notifications callback.
     end
