@@ -184,31 +184,35 @@ DeadBro automatically tracks SQL queries executed during each request and job. E
 - `cached` - Whether the query was cached
 - `connection_id` - Database connection ID
 - `trace` - Call stack showing where the query was executed
-- `explain_plan` - Query execution plan (when EXPLAIN ANALYZE is enabled, see below)
+- `explain_plan` - Query execution plan (when EXPLAIN capture is enabled, see below)
 
-## Automatic EXPLAIN ANALYZE for Slow Queries
+## Automatic EXPLAIN for Slow Queries
 
-DeadBro can automatically run `EXPLAIN ANALYZE` on slow SQL queries to help you understand query performance and identify optimization opportunities. This feature runs in the background and doesn't block your application requests.
+DeadBro can automatically capture the query plan (`EXPLAIN`) of slow SELECT queries to help you understand query performance and identify optimization opportunities.
+
+### Safety guarantees
+
+- **Plan-only, never executed**: DeadBro runs plain `EXPLAIN` (never `EXPLAIN ANALYZE`), which asks the database for its plan without executing the statement. Your queries are never re-run and your data is never touched.
+- **SELECT-only allowlist**: only `SELECT` statements (and read-only `WITH ... SELECT` CTEs) are ever explained. INSERT/UPDATE/DELETE, DDL, and multi-statement strings are always skipped.
+- **Local opt-in required**: the feature is off unless you enable it in your own `DeadBro.configure` block. The DeadBro backend can remotely *disable* it (e.g. plan gating), but can never switch it on.
+- **Value scrubbing**: quoted string literals echoed in plan text (e.g. `Filter: email = 'a@b.com'`) are replaced with `?` before the plan leaves your app.
+- **Bounded overhead**: plans are captured on background threads (max 3 concurrent per request); at request end DeadBro waits at most 0.5s for stragglers, then drops them.
 
 ### How It Works
 
-- **Automatic Detection**: When a query exceeds the configured threshold, DeadBro automatically captures its execution plan
-- **Background Execution**: EXPLAIN ANALYZE runs in a separate thread using a dedicated database connection, so it never blocks your application
-- **Database Support**: Works with PostgreSQL, MySQL, SQLite, and other databases
-- **Smart Filtering**: Automatically skips transaction queries (BEGIN, COMMIT, ROLLBACK) and other queries that don't benefit from EXPLAIN
+- **Automatic Detection**: when a SELECT exceeds `slow_query_threshold_ms`, DeadBro captures its plan in the background
+- **Database Support**: PostgreSQL, MySQL, SQLite (`EXPLAIN QUERY PLAN`), and any adapter with a standard `EXPLAIN`
 
 ### Configuration
 
-These options are usually set in the DeadBro UI. In Ruby:
-
-- **`explain_analyze_enabled`** (default: `false`) - Set to `true` to enable automatic EXPLAIN ANALYZE
-- **`slow_query_threshold_ms`** (default: `500`) - Queries taking longer than this threshold will have their execution plan captured
+- **`explain_analyze_enabled`** (default: `false`) - local opt-in for automatic EXPLAIN plan capture. Must be set in Ruby; the DeadBro UI toggle can only turn capture off, not on.
+- **`slow_query_threshold_ms`** (default: `500`) - queries taking longer than this threshold will have their execution plan captured
 
 ### Example Configuration
 
 ```ruby
 DeadBro.configure do |config|
-  # Enable EXPLAIN ANALYZE for queries slower than 500ms
+  # Capture EXPLAIN plans for SELECTs slower than 500ms
   config.explain_analyze_enabled = true
   config.slow_query_threshold_ms = 500
 
@@ -220,17 +224,17 @@ end
 ### What You Get
 
 When a slow query is detected, the `explain_plan` field in the SQL query data will contain:
-- **PostgreSQL**: Full EXPLAIN ANALYZE output with buffer usage statistics
-- **MySQL**: EXPLAIN ANALYZE output showing actual execution times
-- **SQLite**: EXPLAIN QUERY PLAN output
-- **Other databases**: Standard EXPLAIN output
+- **PostgreSQL / MySQL**: `EXPLAIN` output — the planner's chosen strategy, estimated costs and row counts
+- **SQLite**: `EXPLAIN QUERY PLAN` output
+- **Other databases**: standard `EXPLAIN` output
 
 This execution plan helps you:
 - Identify missing indexes
 - Understand query execution order
 - Spot full table scans
 - Optimize JOIN operations
-- Analyze buffer and cache usage (PostgreSQL)
+
+Because the statement is not executed, plans show the planner's *estimates* rather than actual runtimes — usually exactly what you need to spot a missing index or an unexpected sequential scan.
 
 ## View Rendering Tracking
 

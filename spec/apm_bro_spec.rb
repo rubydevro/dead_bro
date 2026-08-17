@@ -80,6 +80,43 @@ RSpec.describe DeadBro do
       expect(config.should_sample?).to be true
     end
 
+    it "defaults sample_rates_by_type to an empty hash" do
+      config = DeadBro::Configuration.new
+      expect(config.sample_rates_by_type).to eq({})
+    end
+
+    it "uses the per-request-type override over the global sample_rate when present" do
+      config = DeadBro::Configuration.new
+      config.sample_rate = 100
+      config.sample_rates_by_type = {"UsersController#index" => 0}
+
+      expect(config.should_sample?("UsersController#index")).to be false
+      expect(config.should_sample?("OtherController#show")).to be true
+    end
+
+    it "falls back to the global sample_rate for unknown request types" do
+      config = DeadBro::Configuration.new
+      config.sample_rate = 0
+      config.sample_rates_by_type = {"UsersController#index" => 100}
+
+      expect(config.should_sample?("UsersController#index")).to be true
+      expect(config.should_sample?("UnrelatedController#action")).to be false
+      expect(config.should_sample?).to be false
+    end
+
+    it "coerces sample_rates_by_type keys/values to strings/integers" do
+      config = DeadBro::Configuration.new
+      config.sample_rates_by_type = {UsersIndex: "42"}
+      expect(config.sample_rates_by_type).to eq({"UsersIndex" => 42})
+    end
+
+    it "resets sample_rates_by_type to {} when assigned a non-hash" do
+      config = DeadBro::Configuration.new
+      config.sample_rates_by_type = {"A#b" => 10}
+      config.sample_rates_by_type = nil
+      expect(config.sample_rates_by_type).to eq({})
+    end
+
     it "resolves api_key from ENV" do
       config = DeadBro::Configuration.new
       config.api_key = nil
@@ -209,6 +246,16 @@ RSpec.describe DeadBro do
       expect_any_instance_of(Net::HTTP).not_to receive(:request)
 
       client.post_metric(event_name: "test", payload: {})
+    end
+
+    it "does not re-roll should_sample? when force: true, even with global sample_rate 0" do
+      config.sample_rate = 0
+      allow_any_instance_of(Net::HTTP).to receive(:request).and_return(double("Response", code: "202", message: "Accepted"))
+
+      # A per-request-type sampling decision made upstream (e.g. Subscriber) must
+      # be authoritative — post_metric must not re-roll it against the global rate.
+      expect(config).not_to receive(:should_sample?)
+      client.post_metric(event_name: "test", payload: {}, force: true)
     end
 
     it "skips metrics when disabled" do
@@ -749,6 +796,30 @@ RSpec.describe DeadBro do
       expect(config.enabled).to be false
     end
 
+    it "never enables EXPLAIN capture remotely — local opt-in required" do
+      expect(config.explain_analyze_active?).to be false
+
+      config.apply_remote_settings("explain_analyze_enabled" => true)
+      expect(config.explain_analyze_enabled).to be false
+      expect(config.explain_analyze_active?).to be false
+    end
+
+    it "activates EXPLAIN capture only with the local opt-in" do
+      config.explain_analyze_enabled = true
+      expect(config.explain_analyze_active?).to be true
+    end
+
+    it "allows remote settings to disable locally-enabled EXPLAIN capture" do
+      config.explain_analyze_enabled = true
+      config.apply_remote_settings("explain_analyze_enabled" => false)
+
+      expect(config.explain_analyze_active?).to be false
+      # Local opt-in itself is untouched; a later remote true restores it.
+      expect(config.explain_analyze_enabled).to be true
+      config.apply_remote_settings("explain_analyze_enabled" => true)
+      expect(config.explain_analyze_active?).to be true
+    end
+
     it "casts integer values" do
       config.apply_remote_settings("sample_rate" => "75", "max_sql_queries_to_send" => "200")
       expect(config.sample_rate).to eq(75)
@@ -758,6 +829,11 @@ RSpec.describe DeadBro do
     it "casts array values and stringifies elements" do
       config.apply_remote_settings("excluded_controllers" => [:FooController, "BarController"])
       expect(config.excluded_controllers).to eq(["FooController", "BarController"])
+    end
+
+    it "applies sample_rates_by_type as a coerced hash" do
+      config.apply_remote_settings("sample_rates_by_type" => {"UsersController#index" => "10"})
+      expect(config.sample_rates_by_type).to eq({"UsersController#index" => 10})
     end
 
     it "ignores unknown keys" do
@@ -790,7 +866,8 @@ RSpec.describe DeadBro do
         "monitor_enabled" => true,
         "enable_db_stats" => true,
         "enable_process_stats" => false,
-        "enable_system_stats" => false
+        "enable_system_stats" => false,
+        "sample_rates_by_type" => {"UsersController#index" => 10}
       }
 
       expect { config.apply_remote_settings(full_settings) }.not_to raise_error

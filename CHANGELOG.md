@@ -3,7 +3,7 @@
 ### Added
 - Monitor thread now sends a synchronous heartbeat on startup before the first collection tick. This ensures remote settings — including `monitor_enabled` — are applied from the very first reporting cycle, so Sidekiq workers and other non-web processes that have not yet sent any metrics still receive the correct configuration immediately on boot rather than waiting up to 60 seconds for the first scheduled tick.
 
-## [0.2.26] - 2026-06-19
+## [0.2.30] - 2026-06-19
 
 ### Added
 - **`DeadBro.watch(label, **tags) { ... }`**: opt-in scoped timing for arbitrary code during instrumented web requests and background jobs. Records elapsed time, `start_offset_ms`, nesting depth, SQL count/duration attributable to the block, optional tags, and exception metadata (then re-raises). Spans are sent as `watch_events` in the normal APM payload for the Request Trace waterfall. Disabled by default; enable locally via `DeadBro.configure { |c| c.watch_enabled = true }` or remotely via the `watch_enabled` setting. Guardrails: max depth 10, max 50 spans per request, label length 200 chars, max 5 tags per span with tag values truncated to 100 chars. **Nested SQL:** each span diffs the request-wide SQL counter at enter/exit; parent spans include SQL from nested child spans (inclusive totals — use inner spans for per-block SQL, do not sum parent + child counts).

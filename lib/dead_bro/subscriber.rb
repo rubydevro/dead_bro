@@ -43,8 +43,9 @@ module DeadBro
         end
 
         has_error = data[:exception] || data[:exception_object]
+        request_type_key = "#{controller_name}##{action_name}"
         # Errors always ship regardless of sampling (this is what the docs promise).
-        unless has_error || DeadBro.configuration.should_sample?
+        unless has_error || DeadBro.configuration.should_sample?(request_type_key)
           drain_request_tracking
           next
         end
@@ -226,7 +227,10 @@ module DeadBro
           watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
-        client.post_metric(event_name: name, payload: payload)
+        # force: true — the sampling decision (global or per-request-type) was
+        # already made above; client#post_metric must not re-roll it with the
+        # global-only rate, which would silently override a per-type sample rate.
+        client.post_metric(event_name: name, payload: payload, force: true)
       end
     end
 
@@ -234,7 +238,9 @@ module DeadBro
     # a payload (disabled / excluded / sampled out). Without this, a subsequent
     # request reusing the same Puma thread would see stale queries/events.
     def self.drain_request_tracking
-      DeadBro::SqlSubscriber.stop_request_tracking if defined?(DeadBro::SqlSubscriber)
+      # wait_for_explains: false — the result is discarded, so don't block this
+      # thread waiting on pending EXPLAIN plans.
+      DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
       DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
       DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)

@@ -9,15 +9,25 @@ module DeadBro
       :circuit_breaker_enabled, :circuit_breaker_failure_threshold, :circuit_breaker_recovery_timeout,
       :circuit_breaker_retry_timeout, :disk_paths, :interfaces_ignore
 
+    # Local-only opt-in for EXPLAIN plan capture on slow queries. The gem runs
+    # DB statements (plan-only EXPLAIN) when this is on, so it must be enabled
+    # in the app's own config — remote settings can only turn it OFF, never on
+    # (see apply_remote_settings). Effective state: #explain_analyze_active?
+    attr_accessor :explain_analyze_enabled
+
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
-      :sample_rate, :slow_query_threshold_ms, :explain_analyze_enabled, :watch_enabled,
+      :sample_rate, :slow_query_threshold_ms, :watch_enabled,
       :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
       :max_sql_queries_to_send, :max_logs_to_send
 
     # Readers for exclusion lists. Writers are defined below so we can compile
     # and cache the regex form once, instead of rebuilding it per request.
     attr_reader :excluded_controllers, :excluded_jobs, :exclusive_controllers, :exclusive_jobs
+
+    # Per-request-type sample rate overrides, keyed by exact "Controller#action"
+    # (or "JobClass#perform") strings — same identity ApmRequestType uses server-side.
+    attr_reader :sample_rates_by_type
 
     # Tracks when we last received settings from the backend (in-memory only)
     attr_accessor :settings_received_at
@@ -59,6 +69,7 @@ module DeadBro
       explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       watch_enabled excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
+      sample_rates_by_type
     ].freeze
 
     def initialize
@@ -84,6 +95,10 @@ module DeadBro
       # ~2-5ms overhead can be capped without turning the feature fully off.
       @allocation_sample_rate = 100
       @explain_analyze_enabled = false
+      # Remote kill switch for EXPLAIN capture. Defaults to true so a local
+      # opt-in works against older backends that never send the key; any
+      # response that sends explain_analyze_enabled: false turns capture off.
+      @remote_explain_analyze_enabled = true
       @slow_query_threshold_ms = 500
       @max_sql_queries_to_send = 500
       @max_logs_to_send = 100
@@ -92,6 +107,7 @@ module DeadBro
       self.excluded_jobs = []
       self.exclusive_controllers = []
       self.exclusive_jobs = []
+      self.sample_rates_by_type = {}
       @monitor_enabled = false
       @enable_db_stats = false
       @enable_process_stats = false
@@ -135,6 +151,15 @@ module DeadBro
       @compiled_exclusive_jobs = compile_patterns(@exclusive_jobs)
     end
 
+    # Exact-match only — no wildcard/regex support, unlike the exclusion lists.
+    def sample_rates_by_type=(value)
+      return @sample_rates_by_type = {} unless value.is_a?(Hash)
+
+      @sample_rates_by_type = value.each_with_object({}) do |(k, v), memo|
+        memo[k.to_s] = v.to_i
+      end
+    end
+
     # Apply a settings hash received from the backend response.
     # Only known keys are applied; unknown keys are silently ignored.
     # Serialized so concurrent HTTP threads do not interleave writes with request-thread reads.
@@ -149,14 +174,27 @@ module DeadBro
           case k
           when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
             send(:"#{k}=", value.to_i)
-          when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "explain_analyze_enabled",
-               "watch_enabled", "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
+          when "explain_analyze_enabled"
+            # EXPLAIN runs statements against the customer DB, so the backend
+            # must never be able to switch it on — only off. The local opt-in
+            # (explain_analyze_enabled) stays untouched; see #explain_analyze_active?
+            @remote_explain_analyze_enabled = !!value
+          when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "watch_enabled",
+               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))
+          when "sample_rates_by_type"
+            send(:"#{k}=", value)
           end
         end
       end
+    end
+
+    # EXPLAIN capture requires BOTH the local opt-in and the remote flag —
+    # locally off means off no matter what the backend sends.
+    def explain_analyze_active?
+      !!(@explain_analyze_enabled && @remote_explain_analyze_enabled)
     end
 
     def heartbeat_due?
@@ -237,8 +275,12 @@ module DeadBro
       compiled.any? { |entry| match_compiled?(target, entry) }
     end
 
-    def should_sample?
-      sample_rate = resolve_sample_rate
+    def should_sample?(request_type_key = nil)
+      sample_rate = if request_type_key && @sample_rates_by_type.key?(request_type_key.to_s)
+        @sample_rates_by_type[request_type_key.to_s]
+      else
+        resolve_sample_rate
+      end
       sample_rate = 100 if sample_rate.nil?
 
       return true if sample_rate >= 100

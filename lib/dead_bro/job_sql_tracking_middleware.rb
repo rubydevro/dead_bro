@@ -15,6 +15,17 @@ module DeadBro
 
         DeadBro::SqlSubscriber.start_request_tracking
 
+        # Start dependency tracking so HTTP / Redis / cache / view / Elasticsearch time
+        # spent inside the job is captured — mirrors the web SqlTrackingMiddleware. Each
+        # of those subscribers only records when its thread-local has been initialized;
+        # without this, they silently drop every event during a job and all that time
+        # collapses into the "Active Job" residual of the performance breakdown.
+        Thread.current[:dead_bro_http_events] = []
+        DeadBro::CacheSubscriber.start_request_tracking if defined?(DeadBro::CacheSubscriber)
+        DeadBro::RedisSubscriber.start_request_tracking if defined?(DeadBro::RedisSubscriber)
+        DeadBro::ElasticsearchSubscriber.start_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
+        DeadBro::ViewRenderingSubscriber.start_request_tracking if defined?(DeadBro::ViewRenderingSubscriber)
+
         # Start lightweight memory tracking for this job
         if defined?(DeadBro::LightweightMemoryTracker)
           DeadBro::LightweightMemoryTracker.start_request_tracking

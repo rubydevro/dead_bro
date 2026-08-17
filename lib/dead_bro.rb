@@ -122,6 +122,7 @@ module DeadBro
 
   # Returns the current environment (Rails.env or ENV fallback)
   def self.env
+    return ENV["DEADBRO_ENV"] if ENV["DEADBRO_ENV"].present?
     if defined?(Rails) && Rails.respond_to?(:env)
       Rails.env
     else
