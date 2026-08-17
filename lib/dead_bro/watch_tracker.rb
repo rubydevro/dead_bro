@@ -17,6 +17,8 @@ module DeadBro
     THREAD_LOCAL_EVENTS_KEY = :dead_bro_watch_events
     THREAD_LOCAL_ACTIVE_STACK_KEY = :dead_bro_watch_active_stack
 
+    # Deepest depth index still recorded — depths 0..MAX_DEPTH are kept, anything
+    # nested below that yields untracked.
     MAX_DEPTH = 10
     MAX_SPANS_PER_REQUEST = 50
     MAX_LABEL_LENGTH = 200
@@ -46,7 +48,9 @@ module DeadBro
       events = Thread.current[THREAD_LOCAL_EVENTS_KEY]
       Thread.current[THREAD_LOCAL_EVENTS_KEY] = nil
       Thread.current[THREAD_LOCAL_ACTIVE_STACK_KEY] = nil
-      events.is_a?(Array) ? events : []
+      # compact drops reserved slots whose block never completed — can't happen
+      # for a lexical block, but keeps a nil out of the payload if it ever does.
+      events.is_a?(Array) ? events.compact : []
     rescue StandardError
       []
     end
@@ -61,7 +65,7 @@ module DeadBro
       return yield unless events.is_a?(Array) && active_stack.is_a?(Array)
 
       depth = active_stack.length
-      return yield if depth >= MAX_DEPTH
+      return yield if depth > MAX_DEPTH
       return yield if events.length >= MAX_SPANS_PER_REQUEST
 
       sanitized_label = sanitize_label(label)
@@ -80,13 +84,23 @@ module DeadBro
         error: false,
         exception_class: nil
       }
+      # Reserve the slot on entry so spans come out in start order. Blocks only
+      # complete inner-first, so appending on completion would emit a nested span
+      # ahead of its own parent; the placeholder keeps parents before children.
+      # It also makes MAX_SPANS_PER_REQUEST count blocks still in flight.
+      frame[:slot] = events.length
+      events << nil
       active_stack << frame
 
       begin
         yield
       rescue StandardError => e
         frame[:error] = true
-        frame[:exception_class] = e.class.name.to_s[0, 200]
+        # Anonymous classes (Class.new(StandardError)) have a nil name — leave the
+        # field unset rather than shipping an empty string the dashboard would
+        # render as a blank exception.
+        class_name = e.class.name
+        frame[:exception_class] = class_name[0, 200] if class_name
         raise
       ensure
         active_stack.pop if active_stack.last.equal?(frame)
@@ -136,7 +150,9 @@ module DeadBro
 
     def append_completed_span(events, frame)
       return unless events.is_a?(Array)
-      return if events.length >= MAX_SPANS_PER_REQUEST
+
+      slot = frame[:slot]
+      return unless slot.is_a?(Integer) && slot < events.length
 
       elapsed_ms = begin
         ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - frame[:block_start]) * 1000.0).round(2)
@@ -165,7 +181,7 @@ module DeadBro
       tags = frame[:tags]
       span[:tags] = tags if tags.is_a?(Hash) && tags.any?
 
-      events << span
+      events[slot] = span
     rescue StandardError
       # Never raise from instrumentation
     end
