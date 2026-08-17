@@ -11,6 +11,7 @@
 .rspec_status
 dead_bro-*
 .DS_Store
+.claude/
 FEATURES.md
 
 # Private notes / design docs (not for the public repo)
