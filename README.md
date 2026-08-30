@@ -65,115 +65,9 @@ Use the DeadBro UI to turn features on or off, set sample rates, define controll
 
 You can still set `config.enabled` in Ruby if you need to force the integration off in a given environment before any remote settings arrive; otherwise the dashboard can control `enabled` like other remote settings.
 
-## Optional: configuration in Ruby
+## Request Sampling, Exclusions & Whitelisting
 
-The sections below describe the same knobs you can manage in the DeadBro app. Use them only when you want values in source control, per-environment initializer logic, or other overrides outside the UI.
-
-## Request Sampling
-
-DeadBro supports configurable request sampling to reduce the volume of metrics sent to your APM endpoint, which is useful for high-traffic applications. Prefer setting this in the DeadBro app; use Ruby if you need a local override.
-
-### Configuration
-
-Set the sample rate as a percentage (1-100):
-
-```ruby
-# Track 50% of requests
-DeadBro.configure do |config|
-  config.sample_rate = 50
-end
-
-# Track 10% of requests (useful for high-traffic apps)
-DeadBro.configure do |config|
-  config.sample_rate = 10
-end
-
-# Track all requests (default)
-DeadBro.configure do |config|
-  config.sample_rate = 100
-end
-```
-
-### How It Works
-
-- **Random Sampling**: Each request has a random chance of being tracked based on the sample rate
-- **Consistent Per-Request**: The sampling decision is made once per request and applies to all metrics for that request
-- **Debug Logging**: Skipped requests do not count towards the montly limit
-- **Error Tracking**: Errors are still tracked regardless of sampling
-
-### Use Cases
-
-- **High-Traffic Applications**: Reduce APM data volume and costs
-- **Development/Staging**: Sample fewer requests to reduce noise
-- **Performance Testing**: Track a subset of requests during load testing
-- **Cost Optimization**: Balance monitoring coverage with data costs
-
-
-## Excluding Controllers and Jobs
-
-You can exclude specific controllers and jobs from APM tracking (dashboard first; Ruby optional).
-
-### Configuration
-
-
-```ruby
-DeadBro.configure do |config|
-  # Controller-only or controller#action patterns in one list (wildcards supported)
-  config.excluded_controllers = [
-    "HealthChecksController",
-    "Admin::*",
-    "UsersController#show",
-    "Admin::ReportsController#index",
-    "Admin::*#*"
-  ]
-
-  config.excluded_jobs = [
-    "ActiveStorage::AnalyzeJob",
-    "Admin::*"
-  ]
-end
-```
-
-Notes:
-- Wildcards `*` are supported (e.g., `Admin::*`, `Admin::*#*`).
-- Matching uses full names like `UsersController`, `Admin::ReportsController#index`, `MyJob`.
-
-## Exclusive Tracking (Whitelist Mode)
-
-You can configure DeadBro to **only** track specific controllers, actions, or jobs. Prefer the dashboard; use Ruby for overrides.
-
-### Configuration
-
-```ruby
-DeadBro.configure do |config|
-  # Only track these controllers/actions (patterns can include #action or wildcards)
-  config.exclusive_controllers = [
-    "UsersController#show",
-    "UsersController#index",
-    "Admin::ReportsController#*",
-    "Api::*#*"
-  ]
-
-  config.exclusive_jobs = [
-    "PaymentProcessingJob",
-    "EmailDeliveryJob",
-    "Admin::*"
-  ]
-end
-```
-
-### How It Works
-
-- **If `exclusive_controllers` or `exclusive_jobs` is empty/not defined**: All controllers/actions/jobs are tracked (default behavior)
-- **If `exclusive_controllers` or `exclusive_jobs` is defined with values**: Only matching controllers/actions/jobs are tracked
-- **Exclusion takes precedence**: If something matches both `excluded_*` and `exclusive_*`, it is excluded (exclusion is checked first)
-
-### Use Cases
-
-- **Focus on Critical Paths**: Monitor only your most important endpoints
-- **Cost Optimization**: Track only specific high-value operations
-- **Debugging**: Temporarily focus on specific controllers/jobs during investigation
-- **Compliance**: Track only operations that require monitoring for compliance reasons
+To control data volume, DeadBro supports request sampling (track a percentage of requests), excluding specific controllers/jobs from tracking, and whitelisting (tracking *only* specific controllers/jobs). All of this is configured in the DeadBro dashboard — sample rate, `excluded_controllers`/`excluded_jobs`, and `exclusive_controllers`/`exclusive_jobs` patterns (wildcards like `Admin::*` and `Admin::*#*` supported). Exclusion always takes precedence over whitelisting when a pattern matches both.
 
 ## SQL Query Tracking
 
@@ -198,43 +92,19 @@ DeadBro can automatically capture the query plan (`EXPLAIN`) of slow SELECT quer
 - **Value scrubbing**: quoted string literals echoed in plan text (e.g. `Filter: email = 'a@b.com'`) are replaced with `?` before the plan leaves your app.
 - **Bounded overhead**: plans are captured on background threads (max 3 concurrent per request); at request end DeadBro waits at most 0.5s for stragglers, then drops them.
 
-### How It Works
-
-- **Automatic Detection**: when a SELECT exceeds `slow_query_threshold_ms`, DeadBro captures its plan in the background
-- **Database Support**: PostgreSQL, MySQL, SQLite (`EXPLAIN QUERY PLAN`), and any adapter with a standard `EXPLAIN`
-
 ### Configuration
 
-- **`explain_analyze_enabled`** (default: `false`) - local opt-in for automatic EXPLAIN plan capture. Must be set in Ruby; the DeadBro UI toggle can only turn capture off, not on.
-- **`slow_query_threshold_ms`** (default: `500`) - queries taking longer than this threshold will have their execution plan captured
+- **`explain_analyze_enabled`** (default: `false`) — this is the one setting that must be turned on in Ruby; the dashboard toggle can only turn capture *off*, never on, as an extra safety rail:
 
-### Example Configuration
+  ```ruby
+  DeadBro.configure do |config|
+    config.explain_analyze_enabled = true
+  end
+  ```
 
-```ruby
-DeadBro.configure do |config|
-  # Capture EXPLAIN plans for SELECTs slower than 500ms
-  config.explain_analyze_enabled = true
-  config.slow_query_threshold_ms = 500
+- Everything else — the `slow_query_threshold_ms` cutoff and enabling/disabling the feature — is managed from the dashboard.
 
-  # Or use a higher threshold for production
-  # config.slow_query_threshold_ms = 1000  # Only explain queries > 1 second
-end
-```
-
-### What You Get
-
-When a slow query is detected, the `explain_plan` field in the SQL query data will contain:
-- **PostgreSQL / MySQL**: `EXPLAIN` output — the planner's chosen strategy, estimated costs and row counts
-- **SQLite**: `EXPLAIN QUERY PLAN` output
-- **Other databases**: standard `EXPLAIN` output
-
-This execution plan helps you:
-- Identify missing indexes
-- Understand query execution order
-- Spot full table scans
-- Optimize JOIN operations
-
-Because the statement is not executed, plans show the planner's *estimates* rather than actual runtimes — usually exactly what you need to spot a missing index or an unexpected sequential scan.
+When a slow query is detected, the `explain_plan` field in the SQL query data contains the database's `EXPLAIN` (or `EXPLAIN QUERY PLAN` on SQLite) output — the planner's chosen strategy, estimated costs and row counts — useful for spotting missing indexes or unexpected sequential scans. Because the statement is never executed, plans show estimates rather than actual runtimes.
 
 ## View Rendering Tracking
 
@@ -259,20 +129,7 @@ By default, DeadBro uses **lightweight memory tracking** that has minimal perfor
 - **GC Efficiency Analysis**: Monitor garbage collection effectiveness
 - **Zero Allocation Tracking**: No object allocation tracking by default (can be enabled)
 
-### Configuration Options
-
-Usually managed in the dashboard; Ruby example:
-
-```ruby
-DeadBro.configure do |config|
-  config.memory_tracking_enabled = true        # Enable lightweight memory tracking (default: true)
-  config.allocation_tracking_enabled = false   # Enable detailed allocation tracking (default: false)
-  config.allocation_sample_rate = 100          # % of requests that pay for allocation tracking when enabled (1-100, default: 100)
-
-  # Sampling configuration
-  config.sample_rate = 100                     # Percentage of requests to track (1-100, default: 100)
-end
-```
+`memory_tracking_enabled`, `allocation_tracking_enabled`, and `allocation_sample_rate` are all managed from the dashboard.
 
 **Performance Impact:**
 - **Lightweight mode** (`memory_tracking_enabled`, ~0.1ms overhead per request): RSS before/after, GC pressure, the retained-vs-transient signals (`heap_live_slots_growth`, `malloc_increase_bytes`), and per-phase allocation attribution (`allocation_phases` — which of `sql`/`view`/`elasticsearch` allocated the request's objects).
@@ -310,25 +167,7 @@ Everything is **best effort** and designed to be **safe and low overhead**:
 
 ### Configuration
 
-Enable or disable collectors in the DeadBro app, or use `DeadBro.configure` for code-based overrides:
-
-```ruby
-DeadBro.configure do |config|
-  # Enable the periodic job queue monitor (disabled by default)
-  config.job_queue_monitoring_enabled = true
-
-  # Enable best-effort collectors (all default to false)
-  config.enable_db_stats      = true   # ActiveRecord pool + ping latency
-  config.enable_process_stats = true   # pid, hostname, RSS, GC, threads, fds
-  config.enable_system_stats  = true   # CPU%, memory, disk, network
-
-  # Filesystem paths to report disk usage for (default: ["/"])
-  config.disk_paths = ["/", "/var"]
-
-  # Network interfaces to ignore when computing rx/tx stats
-  config.interfaces_ignore = %w[lo docker0]
-end
-```
+Enable or disable the job queue monitor and the individual collectors (`enable_db_stats`, `enable_process_stats`, `enable_system_stats`), plus `disk_paths` and `interfaces_ignore`, from the DeadBro dashboard.
 
 ### Example Payload Shape
 

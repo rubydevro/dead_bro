@@ -40,6 +40,8 @@ module DeadBro
         if defined?(DeadBro::DbConnectionSubscriber)
           DeadBro::DbConnectionSubscriber.start_request_tracking
         end
+
+        DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
       end
     rescue
       # Never raise from instrumentation install
