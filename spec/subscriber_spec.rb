@@ -72,6 +72,35 @@ RSpec.describe DeadBro::Subscriber do
     end
   end
 
+  describe ".safe_request_host" do
+    Req = Struct.new(:host)
+
+    it "reads request.host from the request object" do
+      data = { request: Req.new("App.Example.COM") }
+      expect(described_class.safe_request_host(data)).to eq("app.example.com")
+    end
+
+    it "falls back to HTTP_HOST from a headers hash and strips the port" do
+      data = { headers: { "HTTP_HOST" => "shop.example.com:3000" } }
+      expect(described_class.safe_request_host(data)).to eq("shop.example.com")
+    end
+
+    it "falls back to the env hash" do
+      data = { env: { "HTTP_HOST" => "api.example.com" } }
+      expect(described_class.safe_request_host(data)).to eq("api.example.com")
+    end
+
+    it "drops userinfo but keeps an IPv6 literal intact" do
+      expect(described_class.safe_request_host({ request: Req.new("user@host.example.com") })).to eq("host.example.com")
+      expect(described_class.safe_request_host({ headers: { "HTTP_HOST" => "[::1]:3000" } })).to eq("[::1]")
+    end
+
+    it "strips null bytes and returns empty string when absent" do
+      expect(described_class.safe_request_host({ request: Req.new("ex\x00ample.com") })).to eq("example.com")
+      expect(described_class.safe_request_host({})).to eq("")
+    end
+  end
+
   describe ".safe_params" do
     it "strips null bytes from param values" do
       data = { params: { "page" => "../../etc/passwd\x00.php" } }

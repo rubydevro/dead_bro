@@ -164,6 +164,7 @@ module DeadBro
               duration_ms: duration_ms,
               rails_env: DeadBro.env,
               host: DeadBro.safe_hostname,
+              request_host: safe_request_host(data),
               process_kind: DeadBro.process_kind,
               params: safe_params(data),
               user_agent: safe_user_agent(data),
@@ -197,6 +198,7 @@ module DeadBro
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],
           host: DeadBro.safe_hostname,
+          request_host: safe_request_host(data),
           rails_env: DeadBro.env,
           process_kind: DeadBro.process_kind,
           params: safe_params(data),
@@ -328,6 +330,37 @@ module DeadBro
       else
         (value.to_s.length > max_str) ? value.to_s[0, max_str] + "…" : value.to_s
       end
+    end
+
+    # The domain the request was served on (request.host) — distinct from `host`,
+    # which is the machine's OS hostname. Lets one app that answers on several
+    # domains be sliced by domain in the dashboard. Port and userinfo are dropped;
+    # value is lowercased so "Example.com" and "example.com" aren't two rows.
+    def self.safe_request_host(data)
+      raw =
+        if data[:request] && data[:request].respond_to?(:host)
+          data[:request].host
+        elsif data[:headers]
+          headers = data[:headers]
+          if headers.respond_to?(:[])
+            headers["HTTP_HOST"] || headers["Host"] || headers["host"]
+          elsif headers.respond_to?(:env)
+            headers.env && headers.env["HTTP_HOST"]
+          end
+        elsif data[:env].is_a?(Hash)
+          data[:env]["HTTP_HOST"]
+        end
+
+      host = sanitize_string(raw)
+      return "" if host.empty?
+
+      # Strip any userinfo@ and a trailing :port so only the hostname remains.
+      # Only a numeric trailing port is removed, so IPv6 literals ([::1]) survive.
+      host = host.split("@").last.to_s
+      host = host.sub(/:\d+\z/, "")
+      host.downcase[0, 255]
+    rescue
+      ""
     end
 
     def self.safe_user_agent(data)
