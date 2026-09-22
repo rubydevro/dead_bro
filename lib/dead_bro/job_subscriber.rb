@@ -24,9 +24,22 @@ module DeadBro
       # still runs its "finish" listeners (with :exception / :exception_object set
       # in the payload) when the block raises, then re-raises. There is no separate
       # "exception.active_job" event anywhere in Rails/ActiveJob — a prior version
-      # of this file subscribed to one, which meant job failures were never sent at
-      # all. Branching on data[:exception_object] here is the only place a job
-      # failure can actually be detected.
+      # of this file subscribed to one, so it never fired; the job wasn't dropped,
+      # it fired *this* event and built status: "completed" unconditionally,
+      # silently reporting every failing job as a success. Branching on
+      # data[:exception_object] here is the only place a job failure can actually
+      # be detected.
+      #
+      # Known gap: this only sees an exception that escapes perform_now uncaught.
+      # ActiveJob::Base#perform_now (Execution) rescues internally and hands off to
+      # rescue_with_handler — which is exactly what retry_on/discard_on/rescue_from
+      # are built on (ActiveJob::Exceptions) — before Instrumentation's `super`
+      # even returns. A handled retry or discard returns normally with no
+      # exception attached, so perform.active_job still reports status:
+      # "completed" for every handled attempt; only a retry_on job's final,
+      # unhandled raise (attempts exhausted, no block given) is visible here.
+      # Covering handled attempts would need separate instrumentation on
+      # enqueue_retry.active_job / retry_stopped.active_job / discard.active_job.
       ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
           if DeadBro.configuration.skip_tracking?

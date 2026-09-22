@@ -336,11 +336,14 @@ module DeadBro
     end
 
     # The transaction-control breadcrumbs captured during the tracking window that
-    # this thread's most recent stop_request_tracking call just ended. Must be read
-    # immediately after that call, before another start_request_tracking on the
-    # same thread begins overwriting it.
+    # this thread's most recent stop_request_tracking call just ended. Consumes
+    # (clears) the thread-local on read, not just on write: otherwise it would sit
+    # pinned in Thread.current between requests (a Puma/Sidekiq thread is reused),
+    # and — worse — any caller that reads it without an immediately-preceding
+    # stop_request_tracking would silently get the *previous* request's
+    # breadcrumbs instead of an empty result.
     def self.last_transaction_events
-      Thread.current[:dead_bro_last_transaction_events] || []
+      Thread.current[:dead_bro_last_transaction_events].tap { Thread.current[:dead_bro_last_transaction_events] = nil } || []
     end
 
     # Upper bound on pending EXPLAIN threads per request. Each thread checks

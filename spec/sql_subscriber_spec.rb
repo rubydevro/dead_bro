@@ -229,6 +229,26 @@ RSpec.describe DeadBro::SqlSubscriber do
     expect(txn_events).to all(include(duration_ms: be_a(Numeric)))
   end
 
+  it "last_transaction_events consumes on read, so a later caller doesn't silently see a previous request's breadcrumbs" do
+    skip unless defined?(ActiveSupport::Notifications)
+
+    sql_subscriber.subscribe!
+
+    sql_subscriber.start_request_tracking
+    start = Time.now
+    finish = start + 0.001
+    ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+      sql: "BEGIN", name: "TRANSACTION", cached: false, connection_id: 123
+    })
+    sleep(0.05)
+    sql_subscriber.stop_request_tracking
+
+    expect(sql_subscriber.last_transaction_events.map { |e| e[:event] }).to eq(["BEGIN"])
+    # A second read without an intervening stop_request_tracking must not
+    # return the same (now stale) breadcrumbs again.
+    expect(sql_subscriber.last_transaction_events).to eq([])
+  end
+
   it "also recognizes literal BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE names, as a defensive fallback for older Rails/adapters" do
     skip unless defined?(ActiveSupport::Notifications)
 
