@@ -226,6 +226,9 @@ module DeadBro
           exception_class: exception&.class&.name,
           message: exception&.message&.to_s&.[](0, 1000),
           backtrace: Array(exception&.backtrace).first(50),
+          fingerprint: DeadBro::Subscriber.compute_error_fingerprint(exception),
+          cause_chain: DeadBro::Subscriber.build_cause_chain(exception),
+          error: true,
           rails_env: DeadBro.env,
           host: DeadBro.safe_hostname,
           process_kind: DeadBro.process_kind,
@@ -237,8 +240,13 @@ module DeadBro
           logs: DeadBro.logger.logs
         }.merge(dependency_events)
 
-        event_name = exception&.class&.name || "ActiveJob::Exception"
-        client.post_metric(event_name: event_name, payload: payload, force: true)
+        # event_name must stay JOB_EVENT_NAME ("perform.active_job"), matching the
+        # completion path above — this is the only signal the ingest side uses to
+        # classify a payload as a background job (vs. a web request). Sending the
+        # exception class name here instead (as this used to) meant a failed job's
+        # payload had no controller/action and no job signal, so it was silently
+        # dropped at ingest — background job errors never appeared anywhere.
+        client.post_metric(event_name: JOB_EVENT_NAME, payload: payload, force: true)
       end
     rescue
       # Never raise from instrumentation install

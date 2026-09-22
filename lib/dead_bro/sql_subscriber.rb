@@ -16,7 +16,11 @@ module DeadBro
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
     THREAD_LOCAL_CALL_COUNTS_KEY     = :dead_bro_sql_call_counts
     THREAD_LOCAL_AGGREGATES_KEY      = :dead_bro_sql_aggregates
+    THREAD_LOCAL_TXN_EVENTS_KEY      = :dead_bro_sql_txn_events
     MAX_TRACKED_QUERIES = 1000
+    # Transaction control breadcrumbs (BEGIN/COMMIT/ROLLBACK/...) are cheap and rare
+    # compared to queries, but a pathological retry loop could still spam them.
+    MAX_TRACKED_TXN_EVENTS = 200
 
     # Number of identical queries within one request that triggers N+1 detection.
     N_PLUS_ONE_THRESHOLD = 5
@@ -37,6 +41,8 @@ module DeadBro
     SANITIZE_SKIP_SENSITIVE_WHEN_NO_KEYWORDS = /password|token|secret|key|ssn|credit_card/i
     SANITIZE_SKIP_WHERE_WHEN_NO_KEYWORD = /WHERE/i
 
+    TXN_CONTROL_NAMES = %w[BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE].freeze
+
     # True when there is at least one active tracking context (e.g. for nested jobs).
     def self.tracking_active?
       stack = Thread.current[THREAD_LOCAL_KEY]
@@ -46,6 +52,13 @@ module DeadBro
     # Current queries array (top of stack); nil if no active tracking.
     def self.current_queries_array
       stack = Thread.current[THREAD_LOCAL_KEY]
+      return nil unless stack.is_a?(Array) && stack.any?
+      stack.last
+    end
+
+    # Current transaction-events array (top of stack); nil if no active tracking.
+    def self.current_txn_events_array
+      stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
       return nil unless stack.is_a?(Array) && stack.any?
       stack.last
     end
@@ -96,6 +109,27 @@ module DeadBro
       sql.to_s.downcase
     end
 
+    # Records a lightweight breadcrumb for a transaction-control statement
+    # (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE) — enough to show, e.g., that the
+    # queries preceding an error ran inside a transaction that was rolled back,
+    # without the cost of treating it like a tracked query (no backtrace/EXPLAIN).
+    def self.record_transaction_event(name, started, finished)
+      current = current_txn_events_array
+      return unless current
+      return if current.length >= MAX_TRACKED_TXN_EVENTS
+
+      tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
+
+      current << {
+        event: name,
+        duration_ms: ((finished - started) * 1000.0).round(2),
+        start_offset_ms: start_offset_ms
+      }
+    rescue
+      nil
+    end
+
     def self.subscribe!
       # Subscribe with a start/finish listener to measure allocations per query
       if ActiveSupport::Notifications.notifier.respond_to?(:subscribe)
@@ -106,7 +140,13 @@ module DeadBro
       end
 
       ActiveSupport::Notifications.subscribe(SQL_EVENT_NAME) do |name, started, finished, _unique_id, data|
-        next if data[:name] == "SCHEMA" || data[:name] == "CACHE" || data[:name] == "BEGIN" || data[:name] == "COMMIT" || data[:name] == "ROLLBACK" || data[:name] == "SAVEPOINT" || data[:name] == "RELEASE"
+        next if data[:name] == "SCHEMA" || data[:name] == "CACHE"
+
+        if TXN_CONTROL_NAMES.include?(data[:name])
+          record_transaction_event(data[:name], started, finished)
+          next
+        end
+
         # Only track queries that are part of the current request (top of stack for nested jobs)
         current = current_queries_array
         next unless current
@@ -208,6 +248,7 @@ module DeadBro
       Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = []
       (Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] ||= []) << {}
       (Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  ||= []) << {}
+      (Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]  ||= []) << []
     end
 
     # wait_for_explains: false on drain paths (excluded / sampled-out requests)
@@ -242,6 +283,17 @@ module DeadBro
       end
 
       aggregates_h.values.sort_by { |a| -a[:total_duration_ms] }
+    end
+
+    # Pops and returns the transaction-control breadcrumbs (BEGIN/COMMIT/ROLLBACK/...)
+    # collected since the matching start_request_tracking. Mirrors the thread-local
+    # stack/reset pattern of stop_request_tracking, kept separate so callers that
+    # only want queries aren't forced to also handle this shape.
+    def self.stop_transaction_tracking
+      stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
+      events = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
+      Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY] = nil if stack.nil? || stack.empty?
+      events
     end
 
     # Upper bound on pending EXPLAIN threads per request. Each thread checks

@@ -178,6 +178,44 @@ RSpec.describe DeadBro::SqlSubscriber do
     expect(queries.first[:name]).to eq("User Load")
   end
 
+  it "records transaction control statements as breadcrumbs, not as tracked queries" do
+    skip unless defined?(ActiveSupport::Notifications)
+
+    sql_subscriber.subscribe!
+    sql_subscriber.start_request_tracking
+
+    %w[BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE].each do |txn_name|
+      start = Time.now
+      finish = start + 0.001
+      ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+        sql: txn_name == "SAVEPOINT" ? "SAVEPOINT active_record_1" : txn_name,
+        name: txn_name,
+        cached: false,
+        connection_id: 123
+      })
+    end
+
+    start = Time.now
+    finish = start + 0.001
+    ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+      sql: "SELECT * FROM users",
+      name: "User Load",
+      cached: false,
+      connection_id: 123
+    })
+
+    sleep(0.1)
+
+    queries = sql_subscriber.stop_request_tracking
+    txn_events = sql_subscriber.stop_transaction_tracking
+
+    expect(queries.length).to eq(1)
+    expect(queries.first[:name]).to eq("User Load")
+
+    expect(txn_events.map { |e| e[:event] }).to eq(%w[BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE])
+    expect(txn_events).to all(include(duration_ms: be_a(Numeric)))
+  end
+
   it "handles start_request_tracking and stop_request_tracking" do
     sql_subscriber.start_request_tracking
     expect(Thread.current[:dead_bro_sql_queries]).to be_a(Array)

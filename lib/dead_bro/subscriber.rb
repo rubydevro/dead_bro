@@ -58,6 +58,7 @@ module DeadBro
 
         # Stop SQL tracking and get collected queries (this was started by the request)
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
+        transaction_events = DeadBro::SqlSubscriber.stop_transaction_tracking
 
         # Stop cache, redis, and elasticsearch tracking
         cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
@@ -147,67 +148,20 @@ module DeadBro
           })
         end
 
-        # Report exceptions attached to this action (e.g. controller/view errors)
-        if data[:exception] || data[:exception_object]
-          begin
-            exception_class, exception_message = data[:exception] if data[:exception]
-            exception_obj = data[:exception_object]
-            backtrace = Array(exception_obj&.backtrace).first(50)
-
-            error_payload = {
-              controller: data[:controller],
-              action: data[:action],
-              format: data[:format],
-              method: data[:method],
-              path: safe_path(data),
-              status: data[:status],
-              duration_ms: duration_ms,
-              rails_env: DeadBro.env,
-              host: DeadBro.safe_hostname,
-              request_host: safe_request_host(data),
-              process_kind: DeadBro.process_kind,
-              params: safe_params(data),
-              user_agent: safe_user_agent(data),
-              user_id: extract_user_id(data),
-              exception_class: exception_class || exception_obj&.class&.name,
-              message: (exception_message || exception_obj&.message).to_s[0, 1000],
-              backtrace: backtrace,
-              fingerprint: compute_error_fingerprint(exception_obj),
-              cause_chain: build_cause_chain(exception_obj),
-              error: true,
-              logs: DeadBro.logger.logs
-            }
-
-            event_name = (exception_class || exception_obj&.class&.name || "exception").to_s
-            client.post_metric(event_name: event_name, payload: error_payload, force: true)
-          rescue
-          ensure
-            next
-          end
-        end
-
-        payload = {
-          controller: data[:controller],
-          action: data[:action],
-          format: data[:format],
-          method: data[:method],
-          path: safe_path(data),
-          status: data[:status],
-          started_at: started.utc.iso8601(3),
-          duration_ms: duration_ms,
+        # Everything captured during the request regardless of outcome — shared between
+        # the error and success payloads below so an errored request (e.g. a lock wait
+        # timeout raised mid-transaction) still ships the SQL/cache/memory/etc data that
+        # led up to it, not just the exception. This used to be built only for the
+        # success path, so every errored request shipped with sql_count: 0 and no trace
+        # even though the gem had already captured it.
+        detail_fields = {
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],
-          host: DeadBro.safe_hostname,
-          request_host: safe_request_host(data),
-          rails_env: DeadBro.env,
-          process_kind: DeadBro.process_kind,
-          params: safe_params(data),
-          user_agent: safe_user_agent(data),
-          user_id: extract_user_id(data),
           memory_usage: memory_usage_mb,
           gc_stats: gc_stats,
           sql_count: sql_count(data),
           sql_queries: sql_queries,
+          transaction_events: transaction_events,
           http_outgoing: Thread.current[:dead_bro_http_events] || [],
           cache_events: cache_events,
           redis_events: redis_events,
@@ -229,6 +183,62 @@ module DeadBro
           watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
+
+        # Report exceptions attached to this action (e.g. controller/view errors)
+        if data[:exception] || data[:exception_object]
+          begin
+            exception_class, exception_message = data[:exception] if data[:exception]
+            exception_obj = data[:exception_object]
+            backtrace = Array(exception_obj&.backtrace).first(50)
+
+            error_payload = detail_fields.merge(
+              controller: data[:controller],
+              action: data[:action],
+              format: data[:format],
+              method: data[:method],
+              path: safe_path(data),
+              status: data[:status],
+              duration_ms: duration_ms,
+              rails_env: DeadBro.env,
+              host: DeadBro.safe_hostname,
+              request_host: safe_request_host(data),
+              process_kind: DeadBro.process_kind,
+              params: safe_params(data),
+              user_agent: safe_user_agent(data),
+              user_id: extract_user_id(data),
+              exception_class: exception_class || exception_obj&.class&.name,
+              message: (exception_message || exception_obj&.message).to_s[0, 1000],
+              backtrace: backtrace,
+              fingerprint: compute_error_fingerprint(exception_obj),
+              cause_chain: build_cause_chain(exception_obj),
+              error: true
+            )
+
+            event_name = (exception_class || exception_obj&.class&.name || "exception").to_s
+            client.post_metric(event_name: event_name, payload: error_payload, force: true)
+          rescue
+          ensure
+            next
+          end
+        end
+
+        payload = detail_fields.merge(
+          controller: data[:controller],
+          action: data[:action],
+          format: data[:format],
+          method: data[:method],
+          path: safe_path(data),
+          status: data[:status],
+          started_at: started.utc.iso8601(3),
+          duration_ms: duration_ms,
+          host: DeadBro.safe_hostname,
+          request_host: safe_request_host(data),
+          rails_env: DeadBro.env,
+          process_kind: DeadBro.process_kind,
+          params: safe_params(data),
+          user_agent: safe_user_agent(data),
+          user_id: extract_user_id(data)
+        )
         # force: true — the sampling decision (global or per-request-type) was
         # already made above; client#post_metric must not re-roll it with the
         # global-only rate, which would silently override a per-type sample rate.
@@ -243,6 +253,7 @@ module DeadBro
       # wait_for_explains: false — the result is discarded, so don't block this
       # thread waiting on pending EXPLAIN plans.
       DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
+      DeadBro::SqlSubscriber.stop_transaction_tracking if defined?(DeadBro::SqlSubscriber)
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
       DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
       DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)

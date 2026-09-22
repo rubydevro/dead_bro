@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.2.32] - 2026-09-22
+
+### Fixed
+- **Errored requests now ship the SQL/cache/memory/etc data captured before the exception, not just the exception itself.** Previously, as soon as a request raised (e.g. an `ActiveRecord::LockWaitTimeout` mid-transaction), the subscriber discarded every already-captured `sql_queries`, `cache_events`, `ar_instantiation_count`, `memory_events`, `gc_stats`, etc. entry and sent only exception metadata — so error pages showed a backtrace with zero query context even when the gem had captured it. The error payload now carries the same detail fields a successful request would.
+- **Background job failures are no longer silently dropped by the ingest pipeline.** The `exception.active_job` handler sent the exception class name as the top-level event (instead of `perform.active_job`, the only signal the backend uses to recognize a job payload) and never set `error: true` or `fingerprint`. A failed job's payload therefore looked like neither a valid web request nor a recognized job and was discarded before any record was created — job successes were tracked correctly, but job *errors* never appeared anywhere. The exception payload now sends the correct event name plus `error`, `fingerprint`, and `cause_chain`, matching the web error path.
+
+### Added
+- Transaction-control statements (`BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`RELEASE`) are now captured as lightweight breadcrumbs (`transaction_events`, with offsets) instead of being silently ignored — so a transaction that rolled back before an error shows up explicitly in the request trace.
+
+## [0.2.31] - 2026-08-30
+
 ### Added
 - Monitor thread now sends a synchronous heartbeat on startup before the first collection tick. This ensures remote settings — including `monitor_enabled` — are applied from the very first reporting cycle, so Sidekiq workers and other non-web processes that have not yet sent any metrics still receive the correct configuration immediately on boot rather than waiting up to 60 seconds for the first scheduled tick.
 
