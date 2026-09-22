@@ -178,7 +178,58 @@ RSpec.describe DeadBro::SqlSubscriber do
     expect(queries.first[:name]).to eq("User Load")
   end
 
-  it "records transaction control statements as breadcrumbs, not as tracked queries" do
+  it "records transaction control statements sent under Rails' real name: TRANSACTION as breadcrumbs, deriving the verb from the SQL text" do
+    skip unless defined?(ActiveSupport::Notifications)
+
+    sql_subscriber.subscribe!
+    sql_subscriber.start_request_tracking
+
+    # Rails' own adapters (MySQL/PostgreSQL/SQLite3, checked directly against
+    # activerecord 7.1/8.x) log every transaction-control statement with the
+    # single generic name "TRANSACTION" — the verb only exists in the SQL text
+    # (internal_execute("BEGIN", "TRANSACTION", ...), etc.). This is the shape
+    # that actually arrives in production, unlike literal name: "BEGIN" etc.
+    [
+      "BEGIN",
+      "COMMIT",
+      "ROLLBACK",
+      "SAVEPOINT active_record_1",
+      "RELEASE SAVEPOINT active_record_1",
+      "ROLLBACK TO SAVEPOINT active_record_1"
+    ].each do |sql|
+      start = Time.now
+      finish = start + 0.001
+      ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+        sql: sql,
+        name: "TRANSACTION",
+        cached: false,
+        connection_id: 123
+      })
+    end
+
+    start = Time.now
+    finish = start + 0.001
+    ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+      sql: "SELECT * FROM users",
+      name: "User Load",
+      cached: false,
+      connection_id: 123
+    })
+
+    sleep(0.1)
+
+    queries = sql_subscriber.stop_request_tracking
+    txn_events = sql_subscriber.last_transaction_events
+
+    expect(queries.length).to eq(1)
+    expect(queries.first[:name]).to eq("User Load")
+    expect(txn_events.map { |e| e[:event] }).to eq(
+      ["BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE SAVEPOINT", "ROLLBACK TO SAVEPOINT"]
+    )
+    expect(txn_events).to all(include(duration_ms: be_a(Numeric)))
+  end
+
+  it "also recognizes literal BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE names, as a defensive fallback for older Rails/adapters" do
     skip unless defined?(ActiveSupport::Notifications)
 
     sql_subscriber.subscribe!
@@ -207,7 +258,7 @@ RSpec.describe DeadBro::SqlSubscriber do
     sleep(0.1)
 
     queries = sql_subscriber.stop_request_tracking
-    txn_events = sql_subscriber.stop_transaction_tracking
+    txn_events = sql_subscriber.last_transaction_events
 
     expect(queries.length).to eq(1)
     expect(queries.first[:name]).to eq("User Load")

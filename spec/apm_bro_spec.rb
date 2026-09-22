@@ -562,7 +562,6 @@ RSpec.describe DeadBro do
       # Clear any existing subscriptions
       if defined?(ActiveSupport::Notifications)
         ActiveSupport::Notifications.unsubscribe("perform.active_job")
-        ActiveSupport::Notifications.unsubscribe("exception.active_job")
       end
     end
 
@@ -570,7 +569,6 @@ RSpec.describe DeadBro do
       # Clean up subscriptions
       if defined?(ActiveSupport::Notifications)
         ActiveSupport::Notifications.unsubscribe("perform.active_job")
-        ActiveSupport::Notifications.unsubscribe("exception.active_job")
       end
     end
 
@@ -598,10 +596,13 @@ RSpec.describe DeadBro do
       exception = StandardError.new("Test error")
       exception.set_backtrace(["line1", "line2"])
 
-      ActiveSupport::Notifications.instrument("exception.active_job", {
-        job: job,
-        exception_object: exception
-      })
+      # No "exception.active_job" event exists in Rails/ActiveJob — perform.active_job
+      # itself fires with exception_object set when the block raises. See
+      # job_subscriber_error_spec.rb.
+      begin
+        ActiveSupport::Notifications.instrument("perform.active_job", {job: job}) { raise exception }
+      rescue StandardError
+      end
 
       # The job subscriber should have been called
       expect(true).to be true # Placeholder assertion

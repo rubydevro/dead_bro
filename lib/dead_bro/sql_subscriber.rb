@@ -41,7 +41,42 @@ module DeadBro
     SANITIZE_SKIP_SENSITIVE_WHEN_NO_KEYWORDS = /password|token|secret|key|ssn|credit_card/i
     SANITIZE_SKIP_WHERE_WHEN_NO_KEYWORD = /WHERE/i
 
-    TXN_CONTROL_NAMES = %w[BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE].freeze
+    # Rails' own adapters (MySQL, PostgreSQL, SQLite3, at least 7.1 through 8.1 —
+    # the versions checked directly in this repo) log every transaction-control
+    # statement under the single generic name "TRANSACTION"
+    # (`internal_execute("BEGIN", "TRANSACTION", ...)`, `internal_execute("COMMIT",
+    # "TRANSACTION", ...)`, etc. — see AbstractMysqlAdapter/PostgreSQL::DatabaseStatements/
+    # SQLite3::DatabaseStatements). "BEGIN"/"COMMIT"/"ROLLBACK"/"SAVEPOINT"/"RELEASE"
+    # as literal `name` values are kept here only as a defensive fallback for
+    # adapters/older Rails versions that might still emit them directly — the actual
+    # operation for a "TRANSACTION"-named event is derived from the SQL text itself
+    # (see transaction_operation_for below), since the name alone can't distinguish
+    # BEGIN from COMMIT from a SAVEPOINT.
+    TXN_CONTROL_NAMES = %w[BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE TRANSACTION].freeze
+
+    TXN_OPERATION_FROM_SQL = [
+      [/\A\s*ROLLBACK\s+TO\s+SAVEPOINT/i, "ROLLBACK TO SAVEPOINT"],
+      [/\A\s*RELEASE\s+SAVEPOINT/i, "RELEASE SAVEPOINT"],
+      [/\A\s*SAVEPOINT/i, "SAVEPOINT"],
+      [/\A\s*BEGIN/i, "BEGIN"],
+      [/\A\s*COMMIT/i, "COMMIT"],
+      [/\A\s*ROLLBACK/i, "ROLLBACK"]
+    ].freeze
+
+    # data[:name] is only ever "TRANSACTION" in current Rails — this derives the
+    # actual verb (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO
+    # SAVEPOINT) from the SQL text so breadcrumbs are still meaningful. A literal
+    # non-"TRANSACTION" name (older Rails/adapter) is passed through unchanged.
+    def self.transaction_operation_for(name, sql)
+      return name unless name == "TRANSACTION"
+      sql_str = sql.to_s
+      TXN_OPERATION_FROM_SQL.each do |re, op|
+        return op if sql_str.match?(re)
+      end
+      name
+    rescue
+      name
+    end
 
     # True when there is at least one active tracking context (e.g. for nested jobs).
     def self.tracking_active?
@@ -143,7 +178,7 @@ module DeadBro
         next if data[:name] == "SCHEMA" || data[:name] == "CACHE"
 
         if TXN_CONTROL_NAMES.include?(data[:name])
-          record_transaction_event(data[:name], started, finished)
+          record_transaction_event(transaction_operation_for(data[:name], data[:sql]), started, finished)
           next
         end
 
@@ -264,6 +299,21 @@ module DeadBro
       cc_stack     = Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]
       cc_stack.pop if cc_stack.is_a?(Array) && cc_stack.any?
 
+      # Transaction-control breadcrumbs are popped here, as part of this method's
+      # existing lifecycle, rather than through a separate stop_transaction_tracking
+      # call. start_request_tracking has many callers across this gem (and its own
+      # specs) that only know about query tracking; requiring every one of them to
+      # also remember a second, separately-paired stop call is exactly how a frame
+      # gets pushed and never popped — leaking across every later request/job on
+      # the same thread. Piggybacking on stop_request_tracking, which is already
+      # reliably paired with every start_request_tracking call, means there is
+      # nothing new for any caller to remember. A caller that wants the events
+      # reads last_transaction_events immediately afterward.
+      txn_stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
+      Thread.current[:dead_bro_last_transaction_events] =
+        (txn_stack.is_a?(Array) && txn_stack.any?) ? txn_stack.pop : []
+      Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY] = nil if txn_stack.nil? || txn_stack.empty?
+
       # Fold any completed EXPLAIN plans from raw queries into their aggregate entry
       raw_queries.each do |q|
         next unless q[:explain_plan]
@@ -285,15 +335,12 @@ module DeadBro
       aggregates_h.values.sort_by { |a| -a[:total_duration_ms] }
     end
 
-    # Pops and returns the transaction-control breadcrumbs (BEGIN/COMMIT/ROLLBACK/...)
-    # collected since the matching start_request_tracking. Mirrors the thread-local
-    # stack/reset pattern of stop_request_tracking, kept separate so callers that
-    # only want queries aren't forced to also handle this shape.
-    def self.stop_transaction_tracking
-      stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
-      events = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
-      Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY] = nil if stack.nil? || stack.empty?
-      events
+    # The transaction-control breadcrumbs captured during the tracking window that
+    # this thread's most recent stop_request_tracking call just ended. Must be read
+    # immediately after that call, before another start_request_tracking on the
+    # same thread begins overwriting it.
+    def self.last_transaction_events
+      Thread.current[:dead_bro_last_transaction_events] || []
     end
 
     # Upper bound on pending EXPLAIN threads per request. Each thread checks

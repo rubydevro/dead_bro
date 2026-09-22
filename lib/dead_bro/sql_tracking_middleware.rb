@@ -94,6 +94,7 @@ module DeadBro
       if defined?(DeadBro::SqlSubscriber)
         Thread.current[:dead_bro_sql_queries]
         Thread.current[:dead_bro_sql_queries] = nil
+        Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY] = nil
       end
 
       if defined?(DeadBro::CacheSubscriber)

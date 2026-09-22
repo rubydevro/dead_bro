@@ -58,7 +58,7 @@ module DeadBro
 
         # Stop SQL tracking and get collected queries (this was started by the request)
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
-        transaction_events = DeadBro::SqlSubscriber.stop_transaction_tracking
+        transaction_events = DeadBro::SqlSubscriber.last_transaction_events
 
         # Stop cache, redis, and elasticsearch tracking
         cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
@@ -252,8 +252,8 @@ module DeadBro
     def self.drain_request_tracking
       # wait_for_explains: false — the result is discarded, so don't block this
       # thread waiting on pending EXPLAIN plans.
+      # stop_request_tracking also pops the transaction-events stack (see its comment).
       DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
-      DeadBro::SqlSubscriber.stop_transaction_tracking if defined?(DeadBro::SqlSubscriber)
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
       DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
       DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
