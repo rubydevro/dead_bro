@@ -10,14 +10,12 @@ RSpec.describe DeadBro::JobSubscriber, "dependency capture inside jobs" do
 
     ActiveSupport::Notifications.unsubscribe("perform.active_job")
     ActiveSupport::Notifications.unsubscribe("perform_start.active_job")
-    ActiveSupport::Notifications.unsubscribe("exception.active_job")
     clear_thread_locals
   end
 
   after do
     ActiveSupport::Notifications.unsubscribe("perform.active_job")
     ActiveSupport::Notifications.unsubscribe("perform_start.active_job")
-    ActiveSupport::Notifications.unsubscribe("exception.active_job")
     clear_thread_locals
   end
 

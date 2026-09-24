@@ -16,7 +16,11 @@ module DeadBro
     THREAD_LOCAL_EXPLAIN_PENDING_KEY = :dead_bro_explain_pending
     THREAD_LOCAL_CALL_COUNTS_KEY     = :dead_bro_sql_call_counts
     THREAD_LOCAL_AGGREGATES_KEY      = :dead_bro_sql_aggregates
+    THREAD_LOCAL_TXN_EVENTS_KEY      = :dead_bro_sql_txn_events
     MAX_TRACKED_QUERIES = 1000
+    # Transaction control breadcrumbs (BEGIN/COMMIT/ROLLBACK/...) are cheap and rare
+    # compared to queries, but a pathological retry loop could still spam them.
+    MAX_TRACKED_TXN_EVENTS = 200
 
     # Number of identical queries within one request that triggers N+1 detection.
     N_PLUS_ONE_THRESHOLD = 5
@@ -37,6 +41,43 @@ module DeadBro
     SANITIZE_SKIP_SENSITIVE_WHEN_NO_KEYWORDS = /password|token|secret|key|ssn|credit_card/i
     SANITIZE_SKIP_WHERE_WHEN_NO_KEYWORD = /WHERE/i
 
+    # Rails' own adapters (MySQL, PostgreSQL, SQLite3, at least 7.1 through 8.1 —
+    # the versions checked directly in this repo) log every transaction-control
+    # statement under the single generic name "TRANSACTION"
+    # (`internal_execute("BEGIN", "TRANSACTION", ...)`, `internal_execute("COMMIT",
+    # "TRANSACTION", ...)`, etc. — see AbstractMysqlAdapter/PostgreSQL::DatabaseStatements/
+    # SQLite3::DatabaseStatements). "BEGIN"/"COMMIT"/"ROLLBACK"/"SAVEPOINT"/"RELEASE"
+    # as literal `name` values are kept here only as a defensive fallback for
+    # adapters/older Rails versions that might still emit them directly — the actual
+    # operation for a "TRANSACTION"-named event is derived from the SQL text itself
+    # (see transaction_operation_for below), since the name alone can't distinguish
+    # BEGIN from COMMIT from a SAVEPOINT.
+    TXN_CONTROL_NAMES = %w[BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE TRANSACTION].freeze
+
+    TXN_OPERATION_FROM_SQL = [
+      [/\A\s*ROLLBACK\s+TO\s+SAVEPOINT/i, "ROLLBACK TO SAVEPOINT"],
+      [/\A\s*RELEASE\s+SAVEPOINT/i, "RELEASE SAVEPOINT"],
+      [/\A\s*SAVEPOINT/i, "SAVEPOINT"],
+      [/\A\s*BEGIN/i, "BEGIN"],
+      [/\A\s*COMMIT/i, "COMMIT"],
+      [/\A\s*ROLLBACK/i, "ROLLBACK"]
+    ].freeze
+
+    # data[:name] is only ever "TRANSACTION" in current Rails — this derives the
+    # actual verb (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO
+    # SAVEPOINT) from the SQL text so breadcrumbs are still meaningful. A literal
+    # non-"TRANSACTION" name (older Rails/adapter) is passed through unchanged.
+    def self.transaction_operation_for(name, sql)
+      return name unless name == "TRANSACTION"
+      sql_str = sql.to_s
+      TXN_OPERATION_FROM_SQL.each do |re, op|
+        return op if sql_str.match?(re)
+      end
+      name
+    rescue
+      name
+    end
+
     # True when there is at least one active tracking context (e.g. for nested jobs).
     def self.tracking_active?
       stack = Thread.current[THREAD_LOCAL_KEY]
@@ -46,6 +87,13 @@ module DeadBro
     # Current queries array (top of stack); nil if no active tracking.
     def self.current_queries_array
       stack = Thread.current[THREAD_LOCAL_KEY]
+      return nil unless stack.is_a?(Array) && stack.any?
+      stack.last
+    end
+
+    # Current transaction-events array (top of stack); nil if no active tracking.
+    def self.current_txn_events_array
+      stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
       return nil unless stack.is_a?(Array) && stack.any?
       stack.last
     end
@@ -96,6 +144,27 @@ module DeadBro
       sql.to_s.downcase
     end
 
+    # Records a lightweight breadcrumb for a transaction-control statement
+    # (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE) — enough to show, e.g., that the
+    # queries preceding an error ran inside a transaction that was rolled back,
+    # without the cost of treating it like a tracked query (no backtrace/EXPLAIN).
+    def self.record_transaction_event(name, started, finished)
+      current = current_txn_events_array
+      return unless current
+      return if current.length >= MAX_TRACKED_TXN_EVENTS
+
+      tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
+
+      current << {
+        event: name,
+        duration_ms: ((finished - started) * 1000.0).round(2),
+        start_offset_ms: start_offset_ms
+      }
+    rescue
+      nil
+    end
+
     def self.subscribe!
       # Subscribe with a start/finish listener to measure allocations per query
       if ActiveSupport::Notifications.notifier.respond_to?(:subscribe)
@@ -106,7 +175,13 @@ module DeadBro
       end
 
       ActiveSupport::Notifications.subscribe(SQL_EVENT_NAME) do |name, started, finished, _unique_id, data|
-        next if data[:name] == "SCHEMA" || data[:name] == "CACHE" || data[:name] == "BEGIN" || data[:name] == "COMMIT" || data[:name] == "ROLLBACK" || data[:name] == "SAVEPOINT" || data[:name] == "RELEASE"
+        next if data[:name] == "SCHEMA" || data[:name] == "CACHE"
+
+        if TXN_CONTROL_NAMES.include?(data[:name])
+          record_transaction_event(transaction_operation_for(data[:name], data[:sql]), started, finished)
+          next
+        end
+
         # Only track queries that are part of the current request (top of stack for nested jobs)
         current = current_queries_array
         next unless current
@@ -208,6 +283,7 @@ module DeadBro
       Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = []
       (Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] ||= []) << {}
       (Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  ||= []) << {}
+      (Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]  ||= []) << []
     end
 
     # wait_for_explains: false on drain paths (excluded / sampled-out requests)
@@ -222,6 +298,21 @@ module DeadBro
       aggregates_h = (agg_stack.is_a?(Array) && agg_stack.any?) ? agg_stack.pop : {}
       cc_stack     = Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]
       cc_stack.pop if cc_stack.is_a?(Array) && cc_stack.any?
+
+      # Transaction-control breadcrumbs are popped here, as part of this method's
+      # existing lifecycle, rather than through a separate stop_transaction_tracking
+      # call. start_request_tracking has many callers across this gem (and its own
+      # specs) that only know about query tracking; requiring every one of them to
+      # also remember a second, separately-paired stop call is exactly how a frame
+      # gets pushed and never popped — leaking across every later request/job on
+      # the same thread. Piggybacking on stop_request_tracking, which is already
+      # reliably paired with every start_request_tracking call, means there is
+      # nothing new for any caller to remember. A caller that wants the events
+      # reads last_transaction_events immediately afterward.
+      txn_stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
+      Thread.current[:dead_bro_last_transaction_events] =
+        (txn_stack.is_a?(Array) && txn_stack.any?) ? txn_stack.pop : []
+      Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY] = nil if txn_stack.nil? || txn_stack.empty?
 
       # Fold any completed EXPLAIN plans from raw queries into their aggregate entry
       raw_queries.each do |q|
@@ -242,6 +333,17 @@ module DeadBro
       end
 
       aggregates_h.values.sort_by { |a| -a[:total_duration_ms] }
+    end
+
+    # The transaction-control breadcrumbs captured during the tracking window that
+    # this thread's most recent stop_request_tracking call just ended. Consumes
+    # (clears) the thread-local on read, not just on write: otherwise it would sit
+    # pinned in Thread.current between requests (a Puma/Sidekiq thread is reused),
+    # and — worse — any caller that reads it without an immediately-preceding
+    # stop_request_tracking would silently get the *previous* request's
+    # breadcrumbs instead of an empty result.
+    def self.last_transaction_events
+      Thread.current[:dead_bro_last_transaction_events].tap { Thread.current[:dead_bro_last_transaction_events] = nil } || []
     end
 
     # Upper bound on pending EXPLAIN threads per request. Each thread checks

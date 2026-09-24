@@ -8,13 +8,11 @@ RSpec.describe DeadBro::JobSubscriber, "per-job-type sampling" do
     DeadBro.configuration.enabled = true
 
     ActiveSupport::Notifications.unsubscribe("perform.active_job")
-    ActiveSupport::Notifications.unsubscribe("exception.active_job")
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_KEY] = nil
   end
 
   after do
     ActiveSupport::Notifications.unsubscribe("perform.active_job")
-    ActiveSupport::Notifications.unsubscribe("exception.active_job")
     Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY] = nil
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_KEY] = nil
   end

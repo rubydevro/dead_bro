@@ -9,7 +9,6 @@ end
 module DeadBro
   class JobSubscriber
     JOB_EVENT_NAME = "perform.active_job"
-    JOB_EXCEPTION_EVENT_NAME = "exception.active_job"
 
     def self.subscribe!(client: Client.new)
       # Snap GC state before the job runs so stop_request_tracking gets a valid diff
@@ -19,7 +18,28 @@ module DeadBro
       rescue
       end
 
-      # Track job execution
+      # Track job execution — success AND failure both land here. ActiveJob wraps
+      # perform with `instrument(:perform) { super }` (see
+      # ActiveJob::Instrumentation#instrument), and AS::Notifications.instrument
+      # still runs its "finish" listeners (with :exception / :exception_object set
+      # in the payload) when the block raises, then re-raises. There is no separate
+      # "exception.active_job" event anywhere in Rails/ActiveJob — a prior version
+      # of this file subscribed to one, so it never fired; the job wasn't dropped,
+      # it fired *this* event and built status: "completed" unconditionally,
+      # silently reporting every failing job as a success. Branching on
+      # data[:exception_object] here is the only place a job failure can actually
+      # be detected.
+      #
+      # Known gap: this only sees an exception that escapes perform_now uncaught.
+      # ActiveJob::Base#perform_now (Execution) rescues internally and hands off to
+      # rescue_with_handler — which is exactly what retry_on/discard_on/rescue_from
+      # are built on (ActiveJob::Exceptions) — before Instrumentation's `super`
+      # even returns. A handled retry or discard returns normally with no
+      # exception attached, so perform.active_job still reports status:
+      # "completed" for every handled attempt; only a retry_on job's final,
+      # unhandled raise (attempts exhausted, no block given) is visible here.
+      # Covering handled attempts would need separate instrumentation on
+      # enqueue_retry.active_job / retry_stopped.active_job / discard.active_job.
       ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
           if DeadBro.configuration.skip_tracking?
@@ -40,12 +60,14 @@ module DeadBro
         rescue
         end
 
+        exception = data[:exception_object]
+        has_error = !exception.nil?
+
         # Skip out via sampling before we build any payload — jobs can be chatty
         # enough that even the "cheap" stop/analyze work matters under load.
-        # Completions have no exception attached; the exception subscriber below
-        # always sends errors with force: true.
+        # Errors always ship regardless of sampling, matching Subscriber's web path.
         job_type_key = "#{job_class_name}#perform"
-        unless DeadBro.configuration.should_sample?(job_type_key)
+        unless has_error || DeadBro.configuration.should_sample?(job_type_key)
           drain_job_tracking
           next
         end
@@ -71,6 +93,7 @@ module DeadBro
 
         # Get SQL queries executed during this job
         sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
+        transaction_events = DeadBro::SqlSubscriber.last_transaction_events
         dependency_events = job_dependency_payload
         db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
         gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
@@ -117,8 +140,9 @@ module DeadBro
           db_connection_checkouts: db_connection_stats[:checkouts],
           gc_pressure: gc_pressure,
           ar_instantiation_count: ar_instantiation_count,
-          status: "completed",
+          status: has_error ? "failed" : "completed",
           sql_queries: sql_queries,
+          transaction_events: transaction_events,
           rails_env: DeadBro.env,
           host: DeadBro.safe_hostname,
           process_kind: DeadBro.process_kind,
@@ -130,115 +154,19 @@ module DeadBro
           logs: DeadBro.logger.logs
         }.merge(dependency_events)
 
-        # force: true — the sampling decision above already accounted for any
-        # per-job-type override; client#post_metric must not re-roll it globally.
+        if has_error
+          payload[:exception_class] = exception.class.name
+          payload[:message] = exception.message.to_s[0, 1000]
+          payload[:backtrace] = Array(exception.backtrace).first(50)
+          payload[:fingerprint] = DeadBro::Subscriber.compute_error_fingerprint(exception)
+          payload[:cause_chain] = DeadBro::Subscriber.build_cause_chain(exception)
+          payload[:error] = true
+        end
+
+        # force: true — errors always ship, bypassing sampling by design; for
+        # completions the sampling decision above already accounted for any
+        # per-job-type override, so client#post_metric must not re-roll it globally.
         client.post_metric(event_name: name, payload: payload, force: true)
-      end
-
-      # Track job exceptions
-      ActiveSupport::Notifications.subscribe(JOB_EXCEPTION_EVENT_NAME) do |name, started, finished, _unique_id, data|
-        begin
-          if DeadBro.configuration.skip_tracking?
-            drain_job_tracking
-            next
-          end
-
-          job_class_name = data[:job].class.name
-          if DeadBro.configuration.excluded_job?(job_class_name)
-            next
-          end
-          # If exclusive_jobs is defined and not empty, only track matching jobs
-          unless DeadBro.configuration.exclusive_job?(job_class_name)
-            next
-          end
-        rescue
-        end
-
-        duration_ms = ((finished - started) * 1000.0).round(2)
-        exception = data[:exception_object]
-        queue_duration_ms = job_queue_duration_ms(data[:job], started)
-
-        # Ensure tracking was started (fallback if perform_start.active_job didn't fire)
-        unless DeadBro::SqlSubscriber.tracking_active?
-          DeadBro.logger.clear
-          Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now
-          DeadBro::SqlSubscriber.start_request_tracking
-          start_job_dependency_tracking
-          DeadBro::DbConnectionSubscriber.start_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
-          DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
-          if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
-            DeadBro::MemoryTrackingSubscriber.start_request_tracking
-          else
-            DeadBro::LightweightMemoryTracker.start_request_tracking if defined?(DeadBro::LightweightMemoryTracker)
-          end
-        end
-
-        # Get SQL queries executed during this job
-        sql_queries = DeadBro::SqlSubscriber.stop_request_tracking
-        dependency_events = job_dependency_payload
-        db_connection_stats = defined?(DeadBro::DbConnectionSubscriber) ? DeadBro::DbConnectionSubscriber.stop_request_tracking : {}
-        gc_pressure = defined?(DeadBro::GcTracker) ? DeadBro::GcTracker.stop_request_tracking : {}
-        ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
-        watch_events = defined?(DeadBro::WatchTracker) ? DeadBro::WatchTracker.stop_request_tracking : []
-
-        # Stop memory tracking and get collected memory data
-        if DeadBro.configuration.allocation_tracking_enabled && defined?(DeadBro::MemoryTrackingSubscriber)
-          detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
-          memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
-          # Keep memory_events compact and user-friendly (no large raw arrays)
-          memory_events = {
-            memory_before: detailed_memory[:memory_before],
-            memory_after: detailed_memory[:memory_after],
-            duration_seconds: detailed_memory[:duration_seconds],
-            allocations_count: (detailed_memory[:allocations] || []).length,
-            memory_snapshots_count: (detailed_memory[:memory_snapshots] || []).length,
-            large_objects_count: (detailed_memory[:large_objects] || []).length
-          }
-        else
-          lightweight_memory = DeadBro::LightweightMemoryTracker.stop_request_tracking
-          # Separate raw readings from derived performance metrics to avoid duplicating data
-          memory_events = {
-            memory_before: lightweight_memory[:memory_before],
-            memory_after: lightweight_memory[:memory_after]
-          }
-          memory_performance = {
-            memory_growth_mb: lightweight_memory[:memory_growth_mb],
-            gc_count_increase: lightweight_memory[:gc_count_increase],
-            heap_pages_increase: lightweight_memory[:heap_pages_increase],
-            duration_seconds: lightweight_memory[:duration_seconds]
-          }
-        end
-
-        payload = {
-          job_class: data[:job].class.name,
-          job_id: data[:job].job_id,
-          queue_name: data[:job].queue_name,
-          arguments: safe_arguments(data[:job].arguments),
-          started_at: started.utc.iso8601(3),
-          duration_ms: duration_ms,
-          queue_duration_ms: queue_duration_ms,
-          db_connection_wait_ms: db_connection_stats[:wait_ms],
-          db_connection_checkouts: db_connection_stats[:checkouts],
-          gc_pressure: gc_pressure,
-          ar_instantiation_count: ar_instantiation_count,
-          status: "failed",
-          sql_queries: sql_queries,
-          exception_class: exception&.class&.name,
-          message: exception&.message&.to_s&.[](0, 1000),
-          backtrace: Array(exception&.backtrace).first(50),
-          rails_env: DeadBro.env,
-          host: DeadBro.safe_hostname,
-          process_kind: DeadBro.process_kind,
-          memory_usage: memory_usage_mb,
-          gc_stats: gc_stats,
-          memory_events: memory_events,
-          memory_performance: memory_performance,
-          watch_events: watch_events,
-          logs: DeadBro.logger.logs
-        }.merge(dependency_events)
-
-        event_name = exception&.class&.name || "ActiveJob::Exception"
-        client.post_metric(event_name: event_name, payload: payload, force: true)
       end
     rescue
       # Never raise from instrumentation install
@@ -248,6 +176,7 @@ module DeadBro
     # build a payload (excluded job / sampled out). Matches Subscriber.drain_request_tracking.
     def self.drain_job_tracking
       # wait_for_explains: false — result is discarded, don't block on pending plans.
+      # stop_request_tracking also pops the transaction-events stack (see its comment).
       DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
       Thread.current[:dead_bro_http_events] = nil
       DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)

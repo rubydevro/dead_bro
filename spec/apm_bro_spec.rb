@@ -562,7 +562,6 @@ RSpec.describe DeadBro do
       # Clear any existing subscriptions
       if defined?(ActiveSupport::Notifications)
         ActiveSupport::Notifications.unsubscribe("perform.active_job")
-        ActiveSupport::Notifications.unsubscribe("exception.active_job")
       end
     end
 
@@ -570,44 +569,18 @@ RSpec.describe DeadBro do
       # Clean up subscriptions
       if defined?(ActiveSupport::Notifications)
         ActiveSupport::Notifications.unsubscribe("perform.active_job")
-        ActiveSupport::Notifications.unsubscribe("exception.active_job")
       end
     end
 
-    it "tracks successful job execution", skip: "Requires ActiveSupport::Notifications" do
-      skip unless defined?(ActiveSupport::Notifications)
+    # "tracks successful job execution" / "tracks job exceptions" used to live
+    # here as skip:'d placeholders (expect(true).to be true) — real coverage
+    # for both now exists in job_subscriber_sampling_spec.rb,
+    # job_subscriber_dependencies_spec.rb, job_subscriber_memory_spec.rb, and
+    # job_subscriber_error_spec.rb, all of which mock the client and assert on
+    # actual payload contents. Removed rather than continuing to hand-edit dead,
+    # never-executed bodies to keep them superficially in sync with reality.
 
-      job_subscriber.subscribe!(client: DeadBro::Client.new)
-
-      # Mock a job
-      job = double("Job", class: double("JobClass", name: "TestJob"), job_id: "123", queue_name: "default", arguments: ["arg1", "arg2"])
-
-      ActiveSupport::Notifications.instrument("perform.active_job", {job: job})
-
-      # The job subscriber should have been called (we can't easily test the client call without mocking)
-      expect(true).to be true # Placeholder assertion
-    end
-
-    it "tracks job exceptions", skip: "Requires ActiveSupport::Notifications" do
-      skip unless defined?(ActiveSupport::Notifications)
-
-      job_subscriber.subscribe!(client: DeadBro::Client.new)
-
-      # Mock a job and exception
-      job = double("Job", class: double("JobClass", name: "TestJob"), job_id: "123", queue_name: "default", arguments: ["arg1"])
-      exception = StandardError.new("Test error")
-      exception.set_backtrace(["line1", "line2"])
-
-      ActiveSupport::Notifications.instrument("exception.active_job", {
-        job: job,
-        exception_object: exception
-      })
-
-      # The job subscriber should have been called
-      expect(true).to be true # Placeholder assertion
-    end
-
-    it "sanitizes job arguments", skip: "Requires ActiveSupport::Notifications" do
+    it "sanitizes job arguments" do
       skip unless defined?(ActiveSupport::Notifications)
 
       arguments = [
@@ -623,7 +596,7 @@ RSpec.describe DeadBro do
       expect(sanitized[1]).to end_with("...")
       expect(sanitized[2]).not_to have_key(:password)
       expect(sanitized[2]).to have_key(:normal_key)
-      expect(sanitized[3]).to have(5).items
+      expect(sanitized[3].size).to eq(5)
     end
   end
 

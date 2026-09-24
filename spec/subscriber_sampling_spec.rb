@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "securerandom"
 require "spec_helper"
 
 RSpec.describe DeadBro::Subscriber, "per-request-type sampling" do
@@ -80,6 +81,36 @@ RSpec.describe DeadBro::Subscriber, "per-request-type sampling" do
 
     expect(captured_payloads.size).to eq(1)
     expect(captured_payloads.first[:force]).to be true
+  end
+
+  it "includes the SQL/cache/memory detail fields captured before the error, not just the exception" do
+    DeadBro.configuration.sample_rate = 100
+
+    described_class.subscribe!(client: stub_client)
+
+    DeadBro::SqlSubscriber.subscribe!
+    DeadBro::SqlSubscriber.start_request_tracking
+    start = Time.now
+    finish = start + 0.05
+    ActiveSupport::Notifications.publish("sql.active_record", start, finish, SecureRandom.uuid, {
+      sql: "UPDATE tags SET taggings_count = taggings_count + 1 WHERE id = 795",
+      name: "Tag Update",
+      cached: false,
+      connection_id: 1
+    })
+    sleep(0.05)
+
+    exception = StandardError.new("Lock wait timeout exceeded")
+    exception.set_backtrace(["app/models/tag.rb:1:in `save'"])
+    instrument(controller: "ProgramsController", action: "update", exception: ["ActiveRecord::LockWaitTimeout", exception.message], exception_object: exception)
+
+    expect(captured_payloads.size).to eq(1)
+    payload = captured_payloads.first[:payload]
+    expect(payload[:error]).to be true
+    expect(payload[:sql_queries].length).to eq(1)
+    expect(payload[:sql_queries].map { |q| q[:sql] }).to include("UPDATE tags SET taggings_count = taggings_count + 1 WHERE id = 795")
+  ensure
+    ActiveSupport::Notifications.unsubscribe(DeadBro::SqlSubscriber::SQL_EVENT_NAME)
   end
 
   it "sends the normal (sampled-in) payload with force: true so client#post_metric does not re-roll the global rate" do

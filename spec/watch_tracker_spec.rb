@@ -12,6 +12,9 @@ RSpec.describe DeadBro::WatchTracker do
 
   after do
     described_class.stop_request_tracking
+    # start_tracking below also starts SqlSubscriber tracking; stop it here so a
+    # frame doesn't sit unpopped on its thread-local stacks for later specs.
+    DeadBro::SqlSubscriber.stop_request_tracking(wait_for_explains: false) if defined?(DeadBro::SqlSubscriber)
     Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
   end
 

@@ -9,7 +9,6 @@ RSpec.describe DeadBro::JobSubscriber, "memory tracking fallback" do
     DeadBro.configuration.memory_tracking_enabled = true
 
     ActiveSupport::Notifications.unsubscribe("perform.active_job")
-    ActiveSupport::Notifications.unsubscribe("exception.active_job")
 
     # Ensure no SQL tracking is active (forces the fallback path)
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_KEY] = nil
@@ -17,7 +16,6 @@ RSpec.describe DeadBro::JobSubscriber, "memory tracking fallback" do
 
   after do
     ActiveSupport::Notifications.unsubscribe("perform.active_job")
-    ActiveSupport::Notifications.unsubscribe("exception.active_job")
     Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY] = nil
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_KEY] = nil
   end
@@ -61,13 +59,19 @@ RSpec.describe DeadBro::JobSubscriber, "memory tracking fallback" do
     expect(memory_events[:memory_before]).to be_a(Numeric)
   end
 
-  it "populates memory_events[:memory_before] for exception jobs when perform_start did not fire" do
+  it "populates memory_events[:memory_before] for a failing job when perform_start did not fire" do
     described_class.subscribe!(client: stub_client)
 
     exception = StandardError.new("boom")
     exception.set_backtrace(["line1"])
 
-    ActiveSupport::Notifications.instrument("exception.active_job", {job: mock_job, exception_object: exception})
+    # perform.active_job fires (with exception_object set) even when the job
+    # raises — see job_subscriber_error_spec.rb for why there is no separate
+    # "exception.active_job" event to instrument instead.
+    begin
+      ActiveSupport::Notifications.instrument("perform.active_job", {job: mock_job}) { raise exception }
+    rescue StandardError
+    end
 
     expect(captured_payloads).not_to be_empty
     memory_events = captured_payloads.first[:payload][:memory_events]
