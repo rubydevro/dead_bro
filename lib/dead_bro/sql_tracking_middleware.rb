@@ -9,6 +9,18 @@ module DeadBro
     def call(env)
       return @app.call(env) if DeadBro.configuration.skip_tracking?
 
+      start_tracking(env)
+      @app.call(env)
+    ensure
+      stop_tracking
+    end
+
+    private
+
+    # Setup and teardown both run inside the host's request: if either raised,
+    # the host would get a 500 (or, from teardown, have its own response or
+    # exception replaced by ours). Tracking is best-effort, the request is not.
+    def start_tracking(env)
       # Capture rack entry time before any setup so middleware overhead is accurately measured.
       rack_entry = Time.now
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = rack_entry
@@ -87,9 +99,10 @@ module DeadBro
 
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
+    rescue *DeadBro::CONTAINED_ERRORS
+    end
 
-      @app.call(env)
-    ensure
+    def stop_tracking
       # Clean up thread-local storage
       if defined?(DeadBro::SqlSubscriber)
         Thread.current[:dead_bro_sql_queries]
@@ -117,11 +130,16 @@ module DeadBro
         Thread.current[:dead_bro_lightweight_memory] = nil
       end
 
-      # Clean up HTTP events, ES events, DB connection tracking, and tracking start time
+      # Clean up HTTP events, ES events, DB connection tracking, and tracking start time.
+      # The calls below rescue on their own: teardown has to finish, so one
+      # failing step must not skip the ones after it.
       Thread.current[:dead_bro_elasticsearch_events] = nil
       Thread.current[:dead_bro_http_events] = nil
       Thread.current[:dead_bro_queue_duration_ms] = nil
-      DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+      begin
+        DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+      rescue *DeadBro::CONTAINED_ERRORS
+      end
       Thread.current[DeadBro::GcTracker::THREAD_KEY] = nil if defined?(DeadBro::GcTracker)
       # Bypass stop_request_tracking intentionally — cleanup only, no return value needed here.
       Thread.current[DeadBro::ArObjectTracker::THREAD_KEY] = nil if defined?(DeadBro::ArObjectTracker)
@@ -130,13 +148,17 @@ module DeadBro
       # Safety net: ensure allocation tracing is never left running across
       # requests (Subscriber normally stops it after analyzing).
       if Thread.current[:dead_bro_alloc_active]
-        DeadBro::AllocationSourceSampler.stop if defined?(DeadBro::AllocationSourceSampler)
+        begin
+          DeadBro::AllocationSourceSampler.stop if defined?(DeadBro::AllocationSourceSampler)
+        rescue *DeadBro::CONTAINED_ERRORS
+        end
       end
+    rescue *DeadBro::CONTAINED_ERRORS
+      # Backstop for anything unforeseen above.
+    ensure
       Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     end
-
-    private
 
     def parse_queue_start(env, rack_entry)
       raw = env["HTTP_X_REQUEST_START"] || env["HTTP_X_QUEUE_START"]

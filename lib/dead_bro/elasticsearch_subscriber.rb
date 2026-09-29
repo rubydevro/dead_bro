@@ -123,7 +123,7 @@ module DeadBro
             tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
             start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
             events << build_event(method, path, payload[:status], duration_ms, start_offset_ms)
-          rescue
+          rescue *DeadBro::CONTAINED_ERRORS
           end
         end
       rescue

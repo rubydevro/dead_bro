@@ -30,12 +30,30 @@ module DeadBro
   autoload :MemoryDetails, "dead_bro/memory_details"
   autoload :Logger, "dead_bro/logger"
   autoload :WatchTracker, "dead_bro/watch_tracker"
+  autoload :Sanitizer, "dead_bro/sanitizer"
   begin
     require "dead_bro/railtie"
   rescue LoadError
   end
 
   class Error < StandardError; end
+
+  # What DeadBro code running inside the host's request or job — notification
+  # callbacks, middleware — rescues so it can never fail the host. Rails re-raises
+  # a notification listener's exception into the instrumented block, so a raise
+  # in a process_action callback turns the host's 200 into a 500.
+  #
+  # Deliberately not Exception: an asynchronous interrupt that happens to land
+  # while our code runs (Timeout, Rack::Timeout, Sidekiq::Shutdown, Interrupt)
+  # must still reach the host, or its timeout/shutdown handling silently stops
+  # working. These are the errors our own code can raise synchronously.
+  #
+  # One gap remains: Timeout.timeout(sec, SomeStandardError) delivers a
+  # StandardError, so it is swallowed if it fires mid-callback — as it would be
+  # by any `rescue => e` in the host's own code, on every Ruby. Plain
+  # Timeout.timeout(sec) is not affected. Rescuing Exception wouldn't close that
+  # gap; it would only open the ones above.
+  CONTAINED_ERRORS = [StandardError, ScriptError, SystemStackError].freeze
 
   # Returned by DeadBro.analyze. sql_queries is intentionally omitted from
   # inspect/to_s/pretty_print to avoid bloating console output.
@@ -338,6 +356,7 @@ module DeadBro
             end
 
             local_sql_queries << {duration_ms: duration_ms, sql: normalized_sql, query_type: query_type}
+          rescue *DeadBro::CONTAINED_ERRORS
           end
       end
     rescue

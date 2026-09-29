@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "digest"
 require "rack"
 
 module DeadBro
@@ -21,8 +20,9 @@ module DeadBro
         event_name = exception.class.name.to_s
         event_name = EVENT_NAME if event_name.empty?
         @client.post_metric(event_name: event_name, payload: payload, force: true)
-      rescue
-        # Never let APM reporting interfere with the host app
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Never let APM reporting interfere with the host app — in particular,
+        # never replace the host's exception with one of ours.
       end
       raise
     end
@@ -32,12 +32,12 @@ module DeadBro
     def build_payload(exception, env)
       req = rack_request(env)
 
-      {
+      payload = {
         exception_class: exception.class.name,
         message: truncate(exception.message.to_s, 1000),
         backtrace: safe_backtrace(exception),
-        fingerprint: compute_fingerprint(exception),
-        cause_chain: build_cause_chain(exception),
+        fingerprint: DeadBro::Subscriber.compute_error_fingerprint(exception),
+        cause_chain: DeadBro::Subscriber.build_cause_chain(exception),
         occurred_at: Time.now.utc.to_i,
         rack:
           {
@@ -57,6 +57,10 @@ module DeadBro
         process_kind: DeadBro.process_kind,
         logs: DeadBro.logger.logs
       }
+      # Every field above can carry raw client bytes (headers are binary strings),
+      # so scrub the whole payload rather than field by field. This path only
+      # runs for uncaught exceptions, so the extra walk is cheap.
+      DeadBro::Sanitizer.deep(payload)
     end
 
     def rack_request(env)
@@ -71,61 +75,23 @@ module DeadBro
       []
     end
 
-    def normalize_message(msg)
-      msg.to_s
-        .gsub(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i, "UUID")
-        .gsub(/\b\d+\b/, "N")
-        .gsub(/"[^"]*"/, '"?"')
-        .gsub(/'[^']*'/, "'?'")
-        .strip
-    end
-
-    def compute_fingerprint(exception)
-      top_frame = Array(exception.backtrace).first.to_s.gsub(/:\d+:in /, ":N:in ")
-      input = "#{exception.class.name}|#{normalize_message(exception.message)}|#{top_frame}"
-      Digest::SHA256.hexdigest(input)[0, 16]
-    rescue
-      nil
-    end
-
-    def build_cause_chain(exception)
-      return [] unless exception
-      chain = []
-      cause = exception.cause
-      depth = 0
-      while cause && depth < 5
-        chain << {
-          exception_class: cause.class.name,
-          message: truncate(cause.message.to_s, 500),
-          backtrace_top: Array(cause.backtrace).first(3)
-        }
-        cause = cause.cause
-        depth += 1
-      end
-      chain
-    rescue
-      []
-    end
-
     def safe_params(req)
       return {} unless req
 
       params = req.params || {}
       # Redact at every nesting level (e.g. user[password]) before serializing.
-      JSON.parse(JSON.dump(redact_sensitive(params)))
+      JSON.parse(JSON.dump(DeadBro::Sanitizer.deep(redact_sensitive(params))))
     rescue
       {}
     end
-
-    # Matches a key segment so nested/prefixed/suffixed sensitive keys are caught
-    # without redacting innocent keys like passenger_count.
-    SENSITIVE_SEGMENT_RE = /(?:\A|[_\-\[])(password|passwd|secret|token|api_?key|access_?key|auth|authorization|credential|ssn|credit_?card|card_?number|cvv|cvc)(?:\z|[_\-\]])/i
 
     def redact_sensitive(value)
       case value
       when Hash
         value.each_with_object({}) do |(k, v), memo|
-          memo[k] = SENSITIVE_SEGMENT_RE.match?(k.to_s) ? "[FILTERED]" : redact_sensitive(v)
+          # Scrubbed first: the sensitive-key regex raises on a key that isn't valid UTF-8.
+          k = DeadBro::Sanitizer.string(k) if k.is_a?(String)
+          memo[k] = DeadBro::Subscriber.sensitive_key?(k) ? "[FILTERED]" : redact_sensitive(v)
         end
       when Array
         value.map { |v| redact_sensitive(v) }

@@ -42,6 +42,7 @@ module DeadBro
         end
 
         DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
     rescue
       # Never raise from instrumentation install
