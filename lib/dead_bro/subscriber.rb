@@ -340,6 +340,9 @@ module DeadBro
       when Hash
         entries = value.to_a[0, max_hash_keys]
         entries.each_with_object({}) do |(k, v), memo|
+          # Scrubbed first: the sensitive-key regex raises on a key that isn't
+          # valid UTF-8, which would drop the whole params hash.
+          k = sanitize_string(k) if k.is_a?(String)
           memo[k] = sensitive_key?(k) ? "[FILTERED]" : truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys)
         end
       else

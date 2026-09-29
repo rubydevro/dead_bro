@@ -47,14 +47,14 @@ RSpec.describe "DeadBro never raising into the host app" do
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY] = nil
     Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
     Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY] = nil
+    Thread.current[DeadBro::CacheSubscriber::THREAD_LOCAL_KEY] = nil
     Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
     Thread.current[:dead_bro_alloc_active] = nil
   end
 
   def unsubscribe_all
-    [DeadBro::Subscriber::EVENT_NAME, DeadBro::JobSubscriber::JOB_EVENT_NAME, DeadBro::SqlSubscriber::SQL_EVENT_NAME].each do |event|
-      ActiveSupport::Notifications.unsubscribe(event)
-    end
+    events = [DeadBro::Subscriber::EVENT_NAME, DeadBro::JobSubscriber::JOB_EVENT_NAME, DeadBro::SqlSubscriber::SQL_EVENT_NAME]
+    (events + DeadBro::CacheSubscriber::EVENTS).each { |event| ActiveSupport::Notifications.unsubscribe(event) }
   end
 
   describe "web requests" do
@@ -117,6 +117,20 @@ RSpec.describe "DeadBro never raising into the host app" do
       DeadBro::Subscriber.subscribe!(client: failing_client)
 
       expect { process_action(user_agent: "curl/8.0") }.not_to raise_error
+    end
+
+    it "keeps the request off the client's slow retry path when the user agent ends up in a cache key" do
+      allow(DeadBro::Sanitizer).to receive(:deep).and_call_original
+      DeadBro::Subscriber.subscribe!(client: client)
+      DeadBro::CacheSubscriber.subscribe!
+      DeadBro::CacheSubscriber.start_request_tracking
+
+      # e.g. a rate limiter throttling by user agent
+      ActiveSupport::Notifications.instrument("cache_write.active_support", key: "throttle:#{bot_user_agent}") {}
+      process_action(user_agent: bot_user_agent)
+
+      expect(posted.first["payload"]["cache_events"].first["key"]).to eq("throttle:iaskspider/2.0 �")
+      expect(DeadBro::Sanitizer).not_to have_received(:deep)
     end
   end
 
@@ -193,19 +207,36 @@ RSpec.describe "DeadBro never raising into the host app" do
   describe DeadBro::SqlTrackingMiddleware do
     let(:app) { ->(_env) { [200, {}, ["ok"]] } }
 
+    before do
+      # Put the request on the allocation-tracking path without really tracing.
+      allow(config).to receive(:allocation_tracking_active?).and_return(true)
+      allow(DeadBro::MemoryTrackingSubscriber).to receive(:start_request_tracking)
+      allow(DeadBro::AllocationSourceSampler).to receive(:start)
+      allow(DeadBro::AllocationSourceSampler).to receive(:stop)
+    end
+
     it "serves the request when tracking setup raises" do
       allow(DeadBro::SqlSubscriber).to receive(:start_request_tracking).and_raise(NoMethodError)
 
       expect(described_class.new(app).call({})).to eq([200, {}, ["ok"]])
     end
 
-    it "keeps the host's response when tracking teardown raises" do
-      allow(config).to receive(:allocation_tracking_active?).and_return(true)
-      allow(DeadBro::MemoryTrackingSubscriber).to receive(:start_request_tracking)
-      allow(DeadBro::AllocationSourceSampler).to receive(:start)
+    it "keeps the host's response and finishes teardown when stopping the sampler raises" do
       allow(DeadBro::AllocationSourceSampler).to receive(:stop).and_raise(NoMethodError)
 
       expect(described_class.new(app).call({})).to eq([200, {}, ["ok"]])
+      expect(Thread.current[:dead_bro_alloc_active]).to be_nil
+      expect(Thread.current[DeadBro::TRACKING_START_TIME_KEY]).to be_nil
+    end
+
+    it "still stops the sampler when an earlier teardown step raises" do
+      db_connections = double("DbConnectionSubscriber", start_request_tracking: nil)
+      allow(db_connections).to receive(:stop_request_tracking).and_raise(NoMethodError)
+      stub_const("DeadBro::DbConnectionSubscriber", db_connections)
+
+      expect(described_class.new(app).call({})).to eq([200, {}, ["ok"]])
+      expect(DeadBro::AllocationSourceSampler).to have_received(:stop)
+      expect(Thread.current[DeadBro::GcTracker::THREAD_KEY]).to be_nil
     end
   end
 
@@ -234,6 +265,40 @@ RSpec.describe "DeadBro never raising into the host app" do
       allow(stack_overflowing_client).to receive(:post_metric).and_raise(SystemStackError)
 
       expect { described_class.new(app, stack_overflowing_client).call(env) }.to raise_error(error)
+    end
+
+    it "keeps params, still redacted, when a key isn't valid UTF-8" do
+      bad_key = "na\xA1me".dup.force_encoding(Encoding::UTF_8)
+
+      redacted = described_class.new(app, client).send(:redact_sensitive, {bad_key => "x", "password" => "secret"})
+
+      expect(redacted).to eq("na�me" => "x", "password" => "[FILTERED]")
+    end
+  end
+
+  # Strings captured from the host's own data are scrubbed where they're
+  # captured, so one bad byte doesn't send the whole payload down the client's
+  # slow scrub-and-retry path (a full copy on the request thread).
+  describe "strings captured from host data" do
+    after { DeadBro.logger.clear }
+
+    it "scrubs Redis keys" do
+      event = DeadBro::RedisSubscriber.build_event("redis.command", {command: ["GET", "session:\xA1".b]}, 0.1)
+
+      expect(event[:key]).to eq("session:�")
+    end
+
+    it "scrubs job arguments" do
+      args = DeadBro::JobSubscriber.send(:safe_arguments, ["bot \xA1".b, {"ua" => "bot \xA1".b}, ["bot \xA1".b]])
+
+      expect(args).to eq(["bot �", {"ua" => "bot �"}, ["bot �"]])
+    end
+
+    it "scrubs log messages" do
+      DeadBro.logger.clear
+      DeadBro.logger.info("throttled bot \xA1".b)
+
+      expect(DeadBro.logger.logs.last[:msg]).to eq("throttled bot �")
     end
   end
 end

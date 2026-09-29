@@ -47,6 +47,12 @@ module DeadBro
   # while our code runs (Timeout, Rack::Timeout, Sidekiq::Shutdown, Interrupt)
   # must still reach the host, or its timeout/shutdown handling silently stops
   # working. These are the errors our own code can raise synchronously.
+  #
+  # One gap remains: Timeout.timeout(sec, SomeStandardError) delivers a
+  # StandardError, so it is swallowed if it fires mid-callback — as it would be
+  # by any `rescue => e` in the host's own code, on every Ruby. Plain
+  # Timeout.timeout(sec) is not affected. Rescuing Exception wouldn't close that
+  # gap; it would only open the ones above.
   CONTAINED_ERRORS = [StandardError, ScriptError, SystemStackError].freeze
 
   # Returned by DeadBro.analyze. sql_queries is intentionally omitted from

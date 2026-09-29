@@ -264,17 +264,19 @@ module DeadBro
     def self.safe_arguments(arguments)
       return [] unless arguments.is_a?(Array)
 
-      # Limit and sanitize job arguments
+      # Limit and sanitize job arguments. Strings are scrubbed to valid UTF-8 here
+      # so one binary argument doesn't send the payload down the client's slow retry path.
       arguments.first(10).map do |arg|
         case arg
         when String
-          (arg.length > 200) ? arg[0, 200] + "..." : arg
+          str = DeadBro::Sanitizer.string(arg)
+          (str.length > 200) ? str[0, 200] + "..." : str
         when Hash
           # Filter sensitive keys and limit size
           filtered = arg.reject { |k, _| %w[password token secret key].include?(k.to_s) }
-          (filtered.keys.size > 20) ? filtered.first(20).to_h : filtered
+          DeadBro::Sanitizer.deep((filtered.keys.size > 20) ? filtered.first(20).to_h : filtered)
         when Array
-          arg.first(5)
+          DeadBro::Sanitizer.deep(arg.first(5))
         when ActiveRecord::Base
           # Handle ActiveRecord objects safely
           "#{arg.class.name}##{begin
@@ -284,7 +286,8 @@ module DeadBro
           end}"
         else
           # Convert to string and truncate, but avoid object inspection
-          (arg.to_s.length > 200) ? arg.to_s[0, 200] + "..." : arg.to_s
+          str = DeadBro::Sanitizer.string(arg)
+          (str.length > 200) ? str[0, 200] + "..." : str
         end
       end
     rescue

@@ -503,7 +503,7 @@ module DeadBro
       timestamp = Time.now.utc
       log_entry = {
         sev: severity.to_s,
-        msg: message.to_s,
+        msg: DeadBro::Sanitizer.string(message),
         time: timestamp.iso8601(3)
       }
 
@@ -787,7 +787,7 @@ module DeadBro
       # dominating CPU on N+1-heavy requests (100s of full Thread#backtrace
       # allocations). The main subscriber now captures a trimmed backtrace
       # lazily — and only when a query exceeds slow_query_threshold_ms.
-    rescue
+    rescue *DeadBro::CONTAINED_ERRORS
     end
 
     def finish(name, id, payload)
@@ -805,7 +805,7 @@ module DeadBro
       delta = end_count - start_count
       results = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_RESULTS_KEY] ||= {})
       results[id] = delta
-    rescue
+    rescue *DeadBro::CONTAINED_ERRORS
     end
   end
 end

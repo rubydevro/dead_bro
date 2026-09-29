@@ -94,7 +94,7 @@ module DeadBro
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -126,7 +126,7 @@ module DeadBro
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -158,7 +158,7 @@ module DeadBro
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -180,14 +180,15 @@ module DeadBro
 
         def safe_command(cmd)
           return nil if cmd.nil?
-          cmd.to_s[0, 20]
+          DeadBro::Sanitizer.string(cmd)[0, 20]
         rescue
           nil
         end
 
+        # Redis keys can be binary; see RedisSubscriber.safe_key.
         def safe_key(key)
           return nil if key.nil?
-          s = key.to_s
+          s = DeadBro::Sanitizer.string(key)
           (s.length > 200) ? s[0, 200] + "…" : s
         rescue
           nil
@@ -298,14 +299,16 @@ module DeadBro
 
     def self.safe_command(cmd)
       return nil if cmd.nil?
-      cmd.to_s[0, 20]
+      DeadBro::Sanitizer.string(cmd)[0, 20]
     rescue
       nil
     end
 
+    # Redis keys can be binary (digests, packed ids) or embed request data;
+    # scrubbing here keeps one bad byte off the client's slow retry path.
     def self.safe_key(key)
       return nil if key.nil?
-      s = key.to_s
+      s = DeadBro::Sanitizer.string(key)
       (s.length > 200) ? s[0, 200] + "…" : s
     rescue
       nil

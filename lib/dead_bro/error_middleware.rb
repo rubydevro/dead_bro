@@ -130,6 +130,8 @@ module DeadBro
       case value
       when Hash
         value.each_with_object({}) do |(k, v), memo|
+          # Scrubbed first: the regex raises on a key that isn't valid UTF-8.
+          k = DeadBro::Sanitizer.string(k) if k.is_a?(String)
           memo[k] = SENSITIVE_SEGMENT_RE.match?(k.to_s) ? "[FILTERED]" : redact_sensitive(v)
         end
       when Array

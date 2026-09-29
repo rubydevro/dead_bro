@@ -130,11 +130,16 @@ module DeadBro
         Thread.current[:dead_bro_lightweight_memory] = nil
       end
 
-      # Clean up HTTP events, ES events, DB connection tracking, and tracking start time
+      # Clean up HTTP events, ES events, DB connection tracking, and tracking start time.
+      # The calls below rescue on their own: teardown has to finish, so one
+      # failing step must not skip the ones after it.
       Thread.current[:dead_bro_elasticsearch_events] = nil
       Thread.current[:dead_bro_http_events] = nil
       Thread.current[:dead_bro_queue_duration_ms] = nil
-      DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+      begin
+        DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+      rescue *DeadBro::CONTAINED_ERRORS
+      end
       Thread.current[DeadBro::GcTracker::THREAD_KEY] = nil if defined?(DeadBro::GcTracker)
       # Bypass stop_request_tracking intentionally — cleanup only, no return value needed here.
       Thread.current[DeadBro::ArObjectTracker::THREAD_KEY] = nil if defined?(DeadBro::ArObjectTracker)
@@ -143,11 +148,16 @@ module DeadBro
       # Safety net: ensure allocation tracing is never left running across
       # requests (Subscriber normally stops it after analyzing).
       if Thread.current[:dead_bro_alloc_active]
-        DeadBro::AllocationSourceSampler.stop if defined?(DeadBro::AllocationSourceSampler)
+        begin
+          DeadBro::AllocationSourceSampler.stop if defined?(DeadBro::AllocationSourceSampler)
+        rescue *DeadBro::CONTAINED_ERRORS
+        end
       end
+    rescue *DeadBro::CONTAINED_ERRORS
+      # Backstop for anything unforeseen above.
+    ensure
       Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
-    rescue *DeadBro::CONTAINED_ERRORS
     end
 
     def parse_queue_start(env, rack_entry)

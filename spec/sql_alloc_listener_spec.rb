@@ -75,4 +75,13 @@ RSpec.describe DeadBro::SqlAllocListener do
       expect(Thread.current[alloc_results_key]).to be_nil
     end
   end
+
+  # These run inside the host's query; see DeadBro::CONTAINED_ERRORS.
+  it "never raises into the host's query, even for errors outside StandardError" do
+    allow(GC).to receive(:stat).and_raise(SystemStackError)
+    Thread.current[alloc_start_key] = {event_id => 1000}
+
+    expect { listener.start("sql.active_record", "other-event", {}) }.not_to raise_error
+    expect { listener.finish("sql.active_record", event_id, {}) }.not_to raise_error
+  end
 end
