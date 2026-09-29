@@ -770,27 +770,57 @@ RSpec.describe DeadBro do
     end
 
     it "never enables EXPLAIN capture remotely — local opt-in required" do
-      expect(config.explain_analyze_active?).to be false
+      expect(config.explain_active?).to be false
 
-      config.apply_remote_settings("explain_analyze_enabled" => true)
-      expect(config.explain_analyze_enabled).to be false
-      expect(config.explain_analyze_active?).to be false
+      config.apply_remote_settings("explain_enabled" => true)
+      expect(config.explain_enabled).to be false
+      expect(config.explain_active?).to be false
     end
 
     it "activates EXPLAIN capture only with the local opt-in" do
-      config.explain_analyze_enabled = true
-      expect(config.explain_analyze_active?).to be true
+      config.explain_enabled = true
+      expect(config.explain_active?).to be true
     end
 
     it "allows remote settings to disable locally-enabled EXPLAIN capture" do
-      config.explain_analyze_enabled = true
-      config.apply_remote_settings("explain_analyze_enabled" => false)
+      config.explain_enabled = true
+      config.apply_remote_settings("explain_enabled" => false)
 
-      expect(config.explain_analyze_active?).to be false
+      expect(config.explain_active?).to be false
       # Local opt-in itself is untouched; a later remote true restores it.
-      expect(config.explain_analyze_enabled).to be true
+      expect(config.explain_enabled).to be true
+      config.apply_remote_settings("explain_enabled" => true)
+      expect(config.explain_active?).to be true
+    end
+
+    it "supports old initializers and server settings without bypassing local opt-in" do
       config.apply_remote_settings("explain_analyze_enabled" => true)
+      expect(config.explain_active?).to be false
+      config.explain_analyze_enabled = true
+      expect(config.explain_enabled).to be true
+      config.apply_remote_settings("explain_analyze_enabled" => false)
+      expect(config.explain_active?).to be false
+    end
+
+    it "keeps the legacy active predicate in sync with local opt-in and the remote switch" do
+      expect(config.explain_analyze_active?).to be false
+      config.explain_enabled = true
       expect(config.explain_analyze_active?).to be true
+      config.apply_remote_settings("explain_enabled" => false)
+      expect(config.explain_analyze_active?).to be false
+      config.apply_remote_settings("explain_enabled" => true)
+      expect(config.explain_analyze_active?).to be true
+    end
+
+    it "prefers the canonical remote flag regardless of legacy key order" do
+      config.explain_enabled = true
+      [
+        {"explain_enabled" => false, "explain_analyze_enabled" => true},
+        {"explain_analyze_enabled" => true, "explain_enabled" => false}
+      ].each do |settings|
+        config.apply_remote_settings(settings)
+        expect(config.explain_active?).to be false
+      end
     end
 
     it "casts integer values" do
@@ -828,7 +858,7 @@ RSpec.describe DeadBro do
         "sample_rate" => 80,
         "memory_tracking_enabled" => false,
         "allocation_tracking_enabled" => true,
-        "explain_analyze_enabled" => true,
+        "explain_enabled" => true,
         "slow_query_threshold_ms" => 300,
         "max_sql_queries_to_send" => 100,
         "max_logs_to_send" => 50,

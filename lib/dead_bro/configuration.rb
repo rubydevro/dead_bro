@@ -12,8 +12,12 @@ module DeadBro
     # Local-only opt-in for EXPLAIN plan capture on slow queries. The gem runs
     # DB statements (plan-only EXPLAIN) when this is on, so it must be enabled
     # in the app's own config — remote settings can only turn it OFF, never on
-    # (see apply_remote_settings). Effective state: #explain_analyze_active?
-    attr_accessor :explain_analyze_enabled
+    # (see apply_remote_settings). Effective state: #explain_active?
+    attr_accessor :explain_enabled
+
+    # Compatibility for initializers written before the EXPLAIN option was renamed.
+    alias_method :explain_analyze_enabled, :explain_enabled
+    alias_method :explain_analyze_enabled=, :explain_enabled=
 
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
@@ -66,7 +70,7 @@ module DeadBro
 
     REMOTE_SETTING_KEYS = %w[
       enabled sample_rate memory_tracking_enabled allocation_tracking_enabled allocation_sample_rate
-      explain_analyze_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
+      explain_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       watch_enabled excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
       sample_rates_by_type
@@ -94,11 +98,11 @@ module DeadBro
       # sampling, allocation-source tracing) runs on this % of requests so the
       # ~2-5ms overhead can be capped without turning the feature fully off.
       @allocation_sample_rate = 100
-      @explain_analyze_enabled = false
+      @explain_enabled = false
       # Remote kill switch for EXPLAIN capture. Defaults to true so a local
       # opt-in works against older backends that never send the key; any
-      # response that sends explain_analyze_enabled: false turns capture off.
-      @remote_explain_analyze_enabled = true
+      # response that sends explain_enabled: false turns capture off.
+      @remote_explain_enabled = true
       @slow_query_threshold_ms = 500
       @max_sql_queries_to_send = 500
       @max_logs_to_send = 100
@@ -166,6 +170,12 @@ module DeadBro
     def apply_remote_settings(hash)
       return unless hash.is_a?(Hash)
 
+      # Accept older servers; the canonical key wins when both are present.
+      hash = hash.transform_keys(&:to_s)
+      if hash.key?("explain_analyze_enabled") && !hash.key?("explain_enabled")
+        hash["explain_enabled"] = hash["explain_analyze_enabled"]
+      end
+
       @settings_mutex.synchronize do
         hash.each do |key, value|
           k = key.to_s
@@ -174,11 +184,11 @@ module DeadBro
           case k
           when "sample_rate", "allocation_sample_rate", "slow_query_threshold_ms", "max_sql_queries_to_send", "max_logs_to_send"
             send(:"#{k}=", value.to_i)
-          when "explain_analyze_enabled"
+          when "explain_enabled"
             # EXPLAIN runs statements against the customer DB, so the backend
             # must never be able to switch it on — only off. The local opt-in
-            # (explain_analyze_enabled) stays untouched; see #explain_analyze_active?
-            @remote_explain_analyze_enabled = !!value
+            # (explain_enabled) stays untouched; see #explain_active?
+            @remote_explain_enabled = !!value
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "watch_enabled",
                "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
             send(:"#{k}=", !!value)
@@ -193,9 +203,11 @@ module DeadBro
 
     # EXPLAIN capture requires BOTH the local opt-in and the remote flag —
     # locally off means off no matter what the backend sends.
-    def explain_analyze_active?
-      !!(@explain_analyze_enabled && @remote_explain_analyze_enabled)
+    def explain_active?
+      !!(@explain_enabled && @remote_explain_enabled)
     end
+
+    alias_method :explain_analyze_active?, :explain_active?
 
     def heartbeat_due?
       return false if api_key.nil?

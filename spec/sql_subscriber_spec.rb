@@ -374,20 +374,20 @@ RSpec.describe DeadBro::SqlSubscriber do
     end
   end
 
-  it "has configuration for slow query threshold and explain analyze" do
+  it "has configuration for slow query threshold and EXPLAIN capture" do
     config = DeadBro::Configuration.new
     expect(config.slow_query_threshold_ms).to eq(500)
-    expect(config.explain_analyze_enabled).to be false
+    expect(config.explain_enabled).to be false
 
     # Test configuration
     config.slow_query_threshold_ms = 1000
-    config.explain_analyze_enabled = true
+    config.explain_enabled = true
     expect(config.slow_query_threshold_ms).to eq(1000)
-    expect(config.explain_analyze_enabled).to be true
+    expect(config.explain_enabled).to be true
   end
 
   it "determines if query should be explained" do
-    DeadBro.configuration.explain_analyze_enabled = true
+    DeadBro.configuration.explain_enabled = true
     # Fast query should not be explained
     expect(sql_subscriber.should_explain_query?(100, "SELECT * FROM users")).to be false
 
@@ -412,7 +412,7 @@ RSpec.describe DeadBro::SqlSubscriber do
   end
 
   it "never explains statements that modify data (allowlist)" do
-    DeadBro.configuration.explain_analyze_enabled = true
+    DeadBro.configuration.explain_enabled = true
 
     expect(sql_subscriber.should_explain_query?(600, "INSERT INTO users (name) VALUES ('x')")).to be false
     expect(sql_subscriber.should_explain_query?(600, "UPDATE users SET name = 'x' WHERE id = 1")).to be false
@@ -426,15 +426,15 @@ RSpec.describe DeadBro::SqlSubscriber do
   end
 
   it "requires the local opt-in — remote settings alone cannot enable EXPLAIN" do
-    DeadBro.configuration.explain_analyze_enabled = false
-    DeadBro.configuration.apply_remote_settings("explain_analyze_enabled" => true)
+    DeadBro.configuration.explain_enabled = false
+    DeadBro.configuration.apply_remote_settings("explain_enabled" => true)
 
     expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users")).to be false
   end
 
   it "lets remote settings disable a locally-enabled EXPLAIN" do
-    DeadBro.configuration.explain_analyze_enabled = true
-    DeadBro.configuration.apply_remote_settings("explain_analyze_enabled" => false)
+    DeadBro.configuration.explain_enabled = true
+    DeadBro.configuration.apply_remote_settings("explain_enabled" => false)
 
     expect(sql_subscriber.should_explain_query?(600, "SELECT * FROM users")).to be false
   end

@@ -94,11 +94,11 @@ DeadBro can automatically capture the query plan (`EXPLAIN`) of slow SELECT quer
 
 ### Configuration
 
-- **`explain_analyze_enabled`** (default: `false`) — this is the one setting that must be turned on in Ruby; the dashboard toggle can only turn capture *off*, never on, as an extra safety rail:
+- **`explain_enabled`** (default: `false`) — this is the one setting that must be turned on in Ruby; the dashboard toggle can only turn capture *off*, never on, as an extra safety rail:
 
   ```ruby
   DeadBro.configure do |config|
-    config.explain_analyze_enabled = true
+    config.explain_enabled = true
   end
   ```
 
