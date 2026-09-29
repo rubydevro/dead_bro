@@ -272,7 +272,6 @@ module DeadBro
           current << query_info
         end
       rescue *DeadBro::CONTAINED_ERRORS
-        # Never fail the host's query over a metric we couldn't record.
       end
     end
 

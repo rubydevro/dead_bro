@@ -40,7 +40,6 @@ module DeadBro
               allocated_bytes: allocated_bytes
             )
           rescue *DeadBro::CONTAINED_ERRORS
-            # Never fail the host's request over a metric we couldn't record.
           end
         rescue
           # Allocation tracking might not be available in all Ruby versions

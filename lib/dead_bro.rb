@@ -357,7 +357,6 @@ module DeadBro
 
             local_sql_queries << {duration_ms: duration_ms, sql: normalized_sql, query_type: query_type}
           rescue *DeadBro::CONTAINED_ERRORS
-            # Never fail the block being analyzed over a query we couldn't record.
           end
       end
     rescue

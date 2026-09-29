@@ -43,7 +43,6 @@ module DeadBro
 
         DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
       rescue *DeadBro::CONTAINED_ERRORS
-        # Never fail the host's job over tracking setup.
       end
     rescue
       # Never raise from instrumentation install

@@ -13,8 +13,6 @@ module DeadBro
     MAX_TRACKED_EVENTS = 500
 
     def self.subscribe!(client: Client.new)
-      # Each callback rescues so a render is never failed over a metric we
-      # couldn't record.
       ActiveSupport::Notifications.subscribe(RENDER_TEMPLATE_EVENT) do |_name, started, finished, _uid, data|
         tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "template", identifier: safe_identifier(data[:identifier]),

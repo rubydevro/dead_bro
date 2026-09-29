@@ -14,7 +14,6 @@ module DeadBro
         next unless count
         Thread.current[THREAD_KEY] = count + (data[:record_count] || 1).to_i
       rescue *DeadBro::CONTAINED_ERRORS
-        # Never fail the host's query over a metric we couldn't record.
       end
     rescue StandardError
       # Never raise from instrumentation install
