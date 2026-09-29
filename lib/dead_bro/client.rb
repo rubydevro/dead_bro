@@ -10,6 +10,13 @@ module DeadBro
     def initialize(configuration = DeadBro.configuration)
       @configuration = configuration
       @circuit_breaker = create_circuit_breaker
+      @failures_mutex = Mutex.new
+      @serialization_failures = 0
+    end
+
+    # Payloads dropped because they couldn't be JSON-encoded even after scrubbing.
+    def serialization_failures
+      @failures_mutex.synchronize { @serialization_failures }
     end
 
     def post_metric(event_name:, payload:, force: false)
@@ -41,6 +48,9 @@ module DeadBro
       if sync
         # Called from the monitor thread on startup — run inline so settings are
         # applied before the first collection tick.
+        json = serialize(body)
+        return unless json
+
         uri = URI.parse(metrics_endpoint_url)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == "https")
@@ -49,7 +59,7 @@ module DeadBro
         request = Net::HTTP::Post.new(uri.request_uri)
         request["Content-Type"] = "application/json"
         request["Authorization"] = "Bearer #{@configuration.api_key}"
-        request.body = JSON.dump(body)
+        request.body = json
         perform_request(http, request, event_name: "heartbeat", apply_settings: true)
       else
         dispatch_request(
@@ -119,6 +129,9 @@ module DeadBro
     end
 
     def dispatch_request(url:, body:, event_name:, apply_settings: false)
+      json = serialize(body)
+      return unless json
+
       uri = URI.parse(url)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = (uri.scheme == "https")
@@ -131,11 +144,36 @@ module DeadBro
       if @configuration.settings_received_at
         request["X-Settings-Received-At"] = @configuration.settings_received_at.utc.iso8601
       end
-      request.body = JSON.dump(body)
+      request.body = json
 
       DeadBro::Dispatcher.instance.dispatch do
         perform_request(http, request, event_name: event_name, apply_settings: apply_settings)
       end
+    end
+
+    # Must not raise: for request and job payloads this runs on the host's own
+    # thread. JSON.dump raises on any String that isn't valid UTF-8; the payload
+    # builders scrub the fields known to carry raw request bytes, and this
+    # catches whatever else slips through (a log line, a cache key, a job
+    # argument) at the cost of one retry instead of the whole payload. Returns
+    # nil when the payload can't be sent.
+    def serialize(body)
+      JSON.dump(body)
+    rescue JSON::GeneratorError, EncodingError
+      begin
+        JSON.dump(DeadBro::Sanitizer.deep(body))
+      rescue *DeadBro::CONTAINED_ERRORS
+        record_serialization_failure
+      end
+    rescue *DeadBro::CONTAINED_ERRORS
+      # Not an encoding problem (e.g. an object whose to_json raises), so
+      # scrubbing strings wouldn't help.
+      record_serialization_failure
+    end
+
+    def record_serialization_failure
+      @failures_mutex.synchronize { @serialization_failures += 1 }
+      nil
     end
 
     def perform_request(http, request, event_name:, apply_settings: false)

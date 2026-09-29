@@ -189,7 +189,7 @@ module DeadBro
           begin
             exception_class, exception_message = data[:exception] if data[:exception]
             exception_obj = data[:exception_object]
-            backtrace = Array(exception_obj&.backtrace).first(50)
+            backtrace = Array(exception_obj&.backtrace).first(50).map { |line| sanitize_string(line) }
 
             error_payload = detail_fields.merge(
               controller: data[:controller],
@@ -207,7 +207,7 @@ module DeadBro
               user_agent: safe_user_agent(data),
               user_id: extract_user_id(data),
               exception_class: exception_class || exception_obj&.class&.name,
-              message: (exception_message || exception_obj&.message).to_s[0, 1000],
+              message: sanitize_string((exception_message || exception_obj&.message).to_s[0, 1000]),
               backtrace: backtrace,
               fingerprint: compute_error_fingerprint(exception_obj),
               cause_chain: build_cause_chain(exception_obj),
@@ -243,6 +243,10 @@ module DeadBro
         # already made above; client#post_metric must not re-roll it with the
         # global-only rate, which would silently override a per-type sample rate.
         client.post_metric(event_name: name, payload: payload, force: true)
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Anything raised here would fail the host's request (see
+        # DeadBro::CONTAINED_ERRORS) — drop this request's metrics instead.
+        drain_request_tracking
       end
     end
 
@@ -309,7 +313,7 @@ module DeadBro
     end
 
     def self.sanitize_string(str)
-      str.to_s.gsub("\x00", "")
+      DeadBro::Sanitizer.string(str)
     end
 
     # Matched against a key segment (delimited by start/end, underscore, dash, or
@@ -497,7 +501,7 @@ module DeadBro
     end
 
     def self.normalize_error_message(msg)
-      msg.to_s
+      sanitize_string(msg)
         .gsub(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i, "UUID")
         .gsub(/\b\d+\b/, "N")
         .gsub(/"[^"]*"/, '"?"')
@@ -507,7 +511,7 @@ module DeadBro
 
     def self.compute_error_fingerprint(exception)
       return nil unless exception
-      top_frame = Array(exception.backtrace).first.to_s.gsub(/:\d+:in /, ":N:in ")
+      top_frame = sanitize_string(Array(exception.backtrace).first).gsub(/:\d+:in /, ":N:in ")
       input = "#{exception.class.name}|#{normalize_error_message(exception.message)}|#{top_frame}"
       Digest::SHA256.hexdigest(input)[0, 16]
     rescue
@@ -522,8 +526,8 @@ module DeadBro
       while cause && depth < 5
         chain << {
           exception_class: cause.class.name,
-          message: cause.message.to_s[0, 500],
-          backtrace_top: Array(cause.backtrace).first(3)
+          message: sanitize_string(cause.message.to_s[0, 500]),
+          backtrace_top: Array(cause.backtrace).first(3).map { |line| sanitize_string(line) }
         }
         cause = cause.cause
         depth += 1

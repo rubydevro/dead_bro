@@ -21,8 +21,9 @@ module DeadBro
         event_name = exception.class.name.to_s
         event_name = EVENT_NAME if event_name.empty?
         @client.post_metric(event_name: event_name, payload: payload, force: true)
-      rescue
-        # Never let APM reporting interfere with the host app
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Never let APM reporting interfere with the host app — in particular,
+        # never replace the host's exception with one of ours.
       end
       raise
     end
@@ -32,7 +33,7 @@ module DeadBro
     def build_payload(exception, env)
       req = rack_request(env)
 
-      {
+      payload = {
         exception_class: exception.class.name,
         message: truncate(exception.message.to_s, 1000),
         backtrace: safe_backtrace(exception),
@@ -57,6 +58,10 @@ module DeadBro
         process_kind: DeadBro.process_kind,
         logs: DeadBro.logger.logs
       }
+      # Every field above can carry raw client bytes (headers are binary strings),
+      # so scrub the whole payload rather than field by field. This path only
+      # runs for uncaught exceptions, so the extra walk is cheap.
+      DeadBro::Sanitizer.deep(payload)
     end
 
     def rack_request(env)
@@ -72,7 +77,7 @@ module DeadBro
     end
 
     def normalize_message(msg)
-      msg.to_s
+      DeadBro::Sanitizer.string(msg)
         .gsub(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i, "UUID")
         .gsub(/\b\d+\b/, "N")
         .gsub(/"[^"]*"/, '"?"')
@@ -81,7 +86,7 @@ module DeadBro
     end
 
     def compute_fingerprint(exception)
-      top_frame = Array(exception.backtrace).first.to_s.gsub(/:\d+:in /, ":N:in ")
+      top_frame = DeadBro::Sanitizer.string(Array(exception.backtrace).first).gsub(/:\d+:in /, ":N:in ")
       input = "#{exception.class.name}|#{normalize_message(exception.message)}|#{top_frame}"
       Digest::SHA256.hexdigest(input)[0, 16]
     rescue
@@ -112,7 +117,7 @@ module DeadBro
 
       params = req.params || {}
       # Redact at every nesting level (e.g. user[password]) before serializing.
-      JSON.parse(JSON.dump(redact_sensitive(params)))
+      JSON.parse(JSON.dump(DeadBro::Sanitizer.deep(redact_sensitive(params))))
     rescue
       {}
     end

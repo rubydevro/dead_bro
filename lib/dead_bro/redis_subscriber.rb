@@ -219,6 +219,8 @@ module DeadBro
             if event && should_continue_tracking?
               Thread.current[THREAD_LOCAL_KEY] << event
             end
+          rescue *DeadBro::CONTAINED_ERRORS
+            # Never fail the host's Redis call over a metric we couldn't record.
           end
         rescue
         end

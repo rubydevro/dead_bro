@@ -17,3 +17,6 @@ gem "simplecov", "~> 0.22", require: false
 # For testing ActiveSupport::Notifications functionality
 gem "activesupport", "~> 7.1.0", require: false
 gem "minitest", "< 5.25"
+
+# For testing ErrorMiddleware, which requires rack (always loaded in a Rails app)
+gem "rack", require: false

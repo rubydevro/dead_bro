@@ -271,6 +271,8 @@ module DeadBro
         if should_continue_tracking?(current, MAX_TRACKED_QUERIES)
           current << query_info
         end
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Never fail the host's query over a metric we couldn't record.
       end
     end
 
@@ -379,6 +381,9 @@ module DeadBro
       # are big UPDATE/INSERT with long literal blobs; don't burn regex time on
       # those when we're going to truncate anyway.
       sql = sql[0..SANITIZE_MAX_LENGTH] + "..." if sql.length > SANITIZE_MAX_LENGTH
+      # The regexes below raise on invalid UTF-8 (e.g. a binary literal inlined
+      # by an adapter without prepared statements).
+      sql = DeadBro::Sanitizer.string(sql)
 
       # Only scan for sensitive KV pairs if one of the keywords is actually
       # present — saves two regex passes on the vast majority of queries.
@@ -419,6 +424,10 @@ module DeadBro
       return false if stripped.match?(/\AWITH\b/i) && stripped.match?(EXPLAIN_DML_KEYWORD_RE)
 
       true
+    rescue
+      # e.g. invalid UTF-8 in the SQL, which strip and match? raise on — when in
+      # doubt, don't run anything against the customer's database.
+      false
     end
 
     def self.start_explain_background(sql, connection_id, query_info, binds = nil)

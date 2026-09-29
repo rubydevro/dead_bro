@@ -13,12 +13,15 @@ module DeadBro
     MAX_TRACKED_EVENTS = 500
 
     def self.subscribe!(client: Client.new)
+      # Each callback rescues so a render is never failed over a metric we
+      # couldn't record.
       ActiveSupport::Notifications.subscribe(RENDER_TEMPLATE_EVENT) do |_name, started, finished, _uid, data|
         tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "template", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),
                        rendered_at: Time.now.utc.to_i,
                        start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
 
       ActiveSupport::Notifications.subscribe(RENDER_PARTIAL_EVENT) do |_name, started, finished, _uid, data|
@@ -28,6 +31,7 @@ module DeadBro
                        cache_key: data[:cache_key],
                        rendered_at: Time.now.utc.to_i,
                        start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
 
       ActiveSupport::Notifications.subscribe(RENDER_COLLECTION_EVENT) do |_name, started, finished, _uid, data|
@@ -38,6 +42,7 @@ module DeadBro
                        collection_cached_count: (data[:cached_count] || 0).to_i,
                        rendered_at: Time.now.utc.to_i,
                        start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
     rescue
     end

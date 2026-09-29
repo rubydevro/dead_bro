@@ -15,7 +15,7 @@ module DeadBro
       ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, _data|
         DeadBro::GcTracker.start_request_tracking if defined?(DeadBro::GcTracker)
         DeadBro::ArObjectTracker.start_request_tracking if defined?(DeadBro::ArObjectTracker)
-      rescue
+      rescue *DeadBro::CONTAINED_ERRORS
       end
 
       # Track job execution — success AND failure both land here. ActiveJob wraps
@@ -156,8 +156,8 @@ module DeadBro
 
         if has_error
           payload[:exception_class] = exception.class.name
-          payload[:message] = exception.message.to_s[0, 1000]
-          payload[:backtrace] = Array(exception.backtrace).first(50)
+          payload[:message] = DeadBro::Sanitizer.string(exception.message.to_s[0, 1000])
+          payload[:backtrace] = Array(exception.backtrace).first(50).map { |line| DeadBro::Sanitizer.string(line) }
           payload[:fingerprint] = DeadBro::Subscriber.compute_error_fingerprint(exception)
           payload[:cause_chain] = DeadBro::Subscriber.build_cause_chain(exception)
           payload[:error] = true
@@ -167,6 +167,11 @@ module DeadBro
         # completions the sampling decision above already accounted for any
         # per-job-type override, so client#post_metric must not re-roll it globally.
         client.post_metric(event_name: name, payload: payload, force: true)
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Anything raised here would fail the host's job (see
+        # DeadBro::CONTAINED_ERRORS) — drop this job's metrics instead. Jobs have
+        # no Rack middleware to reset thread-locals afterwards, so drain here.
+        drain_job_tracking
       end
     rescue
       # Never raise from instrumentation install

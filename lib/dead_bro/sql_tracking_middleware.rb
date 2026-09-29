@@ -9,6 +9,18 @@ module DeadBro
     def call(env)
       return @app.call(env) if DeadBro.configuration.skip_tracking?
 
+      start_tracking(env)
+      @app.call(env)
+    ensure
+      stop_tracking
+    end
+
+    private
+
+    # Setup and teardown both run inside the host's request: if either raised,
+    # the host would get a 500 (or, from teardown, have its own response or
+    # exception replaced by ours). Tracking is best-effort, the request is not.
+    def start_tracking(env)
       # Capture rack entry time before any setup so middleware overhead is accurately measured.
       rack_entry = Time.now
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = rack_entry
@@ -87,9 +99,10 @@ module DeadBro
 
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
+    rescue *DeadBro::CONTAINED_ERRORS
+    end
 
-      @app.call(env)
-    ensure
+    def stop_tracking
       # Clean up thread-local storage
       if defined?(DeadBro::SqlSubscriber)
         Thread.current[:dead_bro_sql_queries]
@@ -134,9 +147,8 @@ module DeadBro
       end
       Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
+    rescue *DeadBro::CONTAINED_ERRORS
     end
-
-    private
 
     def parse_queue_start(env, rack_entry)
       raw = env["HTTP_X_REQUEST_START"] || env["HTTP_X_QUEUE_START"]
