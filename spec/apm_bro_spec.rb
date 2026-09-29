@@ -802,6 +802,16 @@ RSpec.describe DeadBro do
       expect(config.explain_active?).to be false
     end
 
+    it "keeps the legacy active predicate in sync with local opt-in and the remote switch" do
+      expect(config.explain_analyze_active?).to be false
+      config.explain_enabled = true
+      expect(config.explain_analyze_active?).to be true
+      config.apply_remote_settings("explain_enabled" => false)
+      expect(config.explain_analyze_active?).to be false
+      config.apply_remote_settings("explain_enabled" => true)
+      expect(config.explain_analyze_active?).to be true
+    end
+
     it "prefers the canonical remote flag regardless of legacy key order" do
       config.explain_enabled = true
       [

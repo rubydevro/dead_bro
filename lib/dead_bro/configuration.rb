@@ -207,6 +207,8 @@ module DeadBro
       !!(@explain_enabled && @remote_explain_enabled)
     end
 
+    alias_method :explain_analyze_active?, :explain_active?
+
     def heartbeat_due?
       return false if api_key.nil?
       last_heartbeat_attempt_at.nil? || (Time.now.utc - last_heartbeat_attempt_at) >= HEARTBEAT_INTERVAL
