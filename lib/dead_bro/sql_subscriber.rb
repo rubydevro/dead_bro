@@ -406,7 +406,7 @@ module DeadBro
     EXPLAIN_DML_KEYWORD_RE = /\b(INSERT|UPDATE|DELETE|MERGE)\b/i.freeze
 
     def self.should_explain_query?(duration_ms, sql)
-      return false unless DeadBro.configuration.explain_analyze_active?
+      return false unless DeadBro.configuration.explain_active?
       return false if duration_ms < DeadBro.configuration.slow_query_threshold_ms
       return false unless sql.is_a?(String)
 
