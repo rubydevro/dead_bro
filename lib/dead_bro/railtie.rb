@@ -75,6 +75,10 @@ if defined?(Rails) && defined?(Rails::Railtie)
             DeadBro::JobSubscriber.subscribe!(client: shared_client)
           end
 
+          # Native Sidekiq::Job classes, which never go through ActiveJob.
+          require "dead_bro/sidekiq_server_middleware"
+          DeadBro::SidekiqServerMiddleware.install!
+
           # Always start the monitor thread. The thread runs every 60s but
           # post_monitor_stats skips the HTTP POST when monitor_enabled
           # is false, so the backend can toggle monitoring on/off mid-process.
