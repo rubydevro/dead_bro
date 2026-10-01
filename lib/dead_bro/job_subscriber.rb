@@ -141,6 +141,8 @@ module DeadBro
           gc_pressure: gc_pressure,
           ar_instantiation_count: ar_instantiation_count,
           status: has_error ? "failed" : "completed",
+          sql_count: DeadBro::Subscriber.sql_count(sql_queries),
+          sql_cached_count: DeadBro::Subscriber.sql_cached_count(sql_queries),
           sql_queries: sql_queries,
           transaction_events: transaction_events,
           rails_env: DeadBro.env,
