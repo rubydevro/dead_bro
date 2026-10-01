@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [0.2.34] - 2026-10-01
+
+### Fixed
+- **`sql_count` stopped at 100 on any page that ran more queries.** It was never a query count: the subscriber read `ActiveRecord::Base.connection.query_cache.size`, the number of distinct SELECTs in the query cache — an LRU capped at 100 entries since Rails 7.1. An N+1 page that ran 188 queries reported "SQL Count 100" and "100 calls/request". `sql_count` is now the sum of the per-statement aggregate counts the SQL subscriber already keeps (every query, not only the first `MAX_TRACKED_QUERIES`), with query-cache hits included the way Rails counts them in its `(N queries, M cached)` log line. The old lookup also leased a database connection on requests that ran no SQL; nothing in the subscriber touches `ActiveRecord::Base.connection` any more.
+- Background jobs sent no `sql_count` at all, so the dashboard showed 0 database calls for every job; job payloads now carry the same count.
+
+### Added
+- `sql_cached_count` on request and job payloads: how many of `sql_count` were answered by the query cache.
+
 ## [0.2.32] - 2026-09-22
 
 ### Fixed
