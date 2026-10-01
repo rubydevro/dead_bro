@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.2.34] - 2026-09-30
+
+### Fixed
+- **The in-process leak detector's `object_count` was always 0.** `gc_stats` never read `heap_live_slots`, so every `MemoryLeakDetector` sample recorded `object_count: 0` and the `object_stats` / `memory_efficiency` figures from `DeadBro::MemoryHelpers.analyze_memory` were meaningless. `gc_stats` now includes `heap_live_slots` — in request and job payloads alike — and the request's leak sample and payload share one `GC.stat` read. `average_memory_per_object_kb` is now actually in KB; it divided RSS in MB by the object count.
+
 ## [0.2.32] - 2026-09-22
 
 ### Fixed

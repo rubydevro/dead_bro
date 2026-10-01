@@ -141,8 +141,9 @@ module DeadBro
       def calculate_memory_efficiency(samples)
         return {} if samples.length < 2
 
+        # memory_usage is RSS in MB; object_count is live heap slots.
         memory_per_object = samples.map do |sample|
-          (sample[:object_count] > 0) ? sample[:memory_usage] / sample[:object_count] : 0
+          (sample[:object_count] > 0) ? sample[:memory_usage] * 1024.0 / sample[:object_count] : 0
         end
 
         gc_efficiency = []

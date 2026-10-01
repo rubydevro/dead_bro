@@ -131,6 +131,17 @@ RSpec.describe DeadBro::MemoryLeakDetector do
       result = described_class.get_memory_analysis
       expect(result).to include(:memory_stats, :gc_stats, :memory_trend, :object_stats, :memory_efficiency)
     end
+
+    it "reports memory per live object in KB" do
+      5.times do
+        described_class.record_memory_sample(memory_usage: 100.0, gc_count: 0, heap_pages: 0, object_count: 400_000)
+      end
+
+      result = described_class.get_memory_analysis
+      # 100 MB over 400,000 live slots = 0.256 KB each.
+      expect(result[:memory_efficiency][:average_memory_per_object_kb]).to eq(0.26)
+      expect(result[:object_stats][:mean]).to eq(400_000)
+    end
   end
 
   # ---------------------------------------------------------------------------
