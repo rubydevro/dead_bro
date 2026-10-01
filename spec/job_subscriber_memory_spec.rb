@@ -78,4 +78,12 @@ RSpec.describe DeadBro::JobSubscriber, "memory tracking fallback" do
     expect(memory_events[:memory_before]).not_to be_nil
     expect(memory_events[:memory_before]).to be_a(Numeric)
   end
+
+  it "ships heap_live_slots in the payload's gc_stats" do
+    described_class.subscribe!(client: stub_client)
+
+    ActiveSupport::Notifications.instrument("perform.active_job", {job: mock_job})
+
+    expect(captured_payloads.first[:payload][:gc_stats][:heap_live_slots]).to be > 0
+  end
 end

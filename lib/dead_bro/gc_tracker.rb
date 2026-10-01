@@ -29,8 +29,8 @@ module DeadBro
       # Memory-tracking enrichment (a few extra GC.stat reads). Only the base
       # GC pressure fields above are truly always-on.
       if memory_tracking_enabled?
-        # Live heap slots — net retained objects. Comparing this delta against
-        # allocated_objects separates transient churn from genuine retention.
+        # Live heap slots, process-wide. How to read their delta is explained
+        # in self.diff below.
         base[:heap_live_slots] = stat[:heap_live_slots] || 0
         # Bytes malloc'd outside the Ruby object heap (big strings/buffers, e.g.
         # parsed JSON response bodies). These are point-in-time gauges reset by
@@ -58,9 +58,13 @@ module DeadBro
 
       # Present only when the enrichment was captured (memory tracking enabled).
       if after.key?(:heap_live_slots) || before.key?(:heap_live_slots)
-        # Net change in live slots over the request. A small value alongside a
-        # large allocated_objects means the memory was transient (reclaimed by
-        # GC); a large value means objects were retained — the real leak signal.
+        # Signed net change in live slots over the request. Like allocated_objects
+        # it is process-wide: every thread's allocations and frees count. It only
+        # separates transient churn from retention once a GC in the window has
+        # freed something: without one, slots are freed only by the lazy sweep of
+        # an earlier GC, and a GC that starts late in the request may free
+        # nothing before it ends. It goes negative when more is freed than
+        # allocated. Read it together with minor_gc_runs/major_gc_runs.
         result[:heap_live_slots_growth] = (after[:heap_live_slots] || 0) - (before[:heap_live_slots] || 0)
         # Off-heap malloc pressure pending at request end (see snapshot).
         result[:malloc_increase_bytes] = after[:malloc_increase_bytes] || 0
