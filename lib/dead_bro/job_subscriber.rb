@@ -259,8 +259,11 @@ module DeadBro
     def self.safe_arguments(arguments)
       return [] unless arguments.is_a?(Array)
 
+      filter = DeadBro.parameter_filter
+
       # Limit and sanitize job arguments
       arguments.first(10).map do |arg|
+        arg = filter.filter(arg) if filter && arg.is_a?(Hash)
         case arg
         when String
           (arg.length > 200) ? arg[0, 200] + "..." : arg
