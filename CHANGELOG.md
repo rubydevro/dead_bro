@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed
+- **Job arguments and uncaught-error reports now honour the host app's `filter_parameters`.** Both only redacted the gem's built-in key list (password, token, secret, ...), so anything an app filters from its own logs — phone numbers, emails, message bodies — was sent as-is in `arguments` and in the error report's `rack.params` and `rack.fullpath`. Hash job arguments now go through `ActiveSupport::ParameterFilter` with `Rails.application.config.filter_parameters`, and the error middleware filters params and the query string with the request's `action_dispatch.parameter_filter`. Request payloads from `process_action.action_controller` were already filtered by Rails. The built-in redaction still applies on top, and nothing changes outside Rails.
+
 ## [0.2.32] - 2026-09-22
 
 ### Fixed

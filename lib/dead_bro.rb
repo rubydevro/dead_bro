@@ -132,6 +132,27 @@ module DeadBro
     "development"
   end
 
+  # Filter built from the host app's filter_parameters (or the given list), so
+  # payloads hide what the app hides from its own logs — phone numbers, message
+  # bodies, emails — and not only the gem's built-in sensitive keys.
+  # Returns nil outside Rails or when nothing is configured.
+  def self.parameter_filter(filters = rails_filter_parameters)
+    return if filters.nil? || filters.empty?
+    return unless defined?(ActiveSupport::ParameterFilter)
+
+    ActiveSupport::ParameterFilter.new(filters)
+  rescue
+    nil
+  end
+
+  def self.rails_filter_parameters
+    return unless defined?(Rails) && Rails.respond_to?(:application) && Rails.application
+
+    Rails.application.config.filter_parameters
+  rescue
+    nil
+  end
+
   # OS hostname for identifying which machine handled a request, job, or metric.
   def self.safe_hostname
     require "socket"

@@ -43,7 +43,7 @@ module DeadBro
           {
             method: req&.request_method,
             path: req&.path,
-            fullpath: req&.fullpath,
+            fullpath: safe_fullpath(req),
             ip: req&.ip,
             user_agent: truncate(req&.user_agent.to_s, 200),
             params: safe_params(req),
@@ -111,10 +111,35 @@ module DeadBro
       return {} unless req
 
       params = req.params || {}
+      filter = request_parameter_filter(req)
+      params = filter.filter(params) if filter
       # Redact at every nesting level (e.g. user[password]) before serializing.
       JSON.parse(JSON.dump(redact_sensitive(params)))
     rescue
       {}
+    end
+
+    def safe_fullpath(req)
+      return unless req
+
+      filter = request_parameter_filter(req)
+      return req.fullpath if filter.nil? || req.query_string.to_s.empty?
+
+      # Same shape as ActionDispatch's filtered_path: filter each key=value pair
+      # in place so the reported URL keeps its structure.
+      query = req.query_string.gsub(/([^&;=]+)=([^&;]*)/) do
+        key = $1
+        value = $2
+        "#{key}=#{filter.filter(key => value)[key]}"
+      end
+      "#{req.path}?#{query}"
+    rescue
+      req&.path
+    end
+
+    # Rails puts the app's filter_parameters in the env of every request.
+    def request_parameter_filter(req)
+      DeadBro.parameter_filter(req.env["action_dispatch.parameter_filter"] || DeadBro.rails_filter_parameters)
     end
 
     # Matches a key segment so nested/prefixed/suffixed sensitive keys are caught
