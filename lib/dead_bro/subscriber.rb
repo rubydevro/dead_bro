@@ -135,13 +135,16 @@ module DeadBro
           }
         end
 
+        # One GC.stat read for both the leak-detection sample and the payload.
+        end_gc_stats = gc_stats
+
         # Record memory sample for leak detection (only if memory tracking enabled)
         if DeadBro.configuration.memory_tracking_enabled
           DeadBro::MemoryLeakDetector.record_memory_sample({
             memory_usage: memory_usage_mb,
-            gc_count: gc_stats[:count],
-            heap_pages: gc_stats[:heap_allocated_pages],
-            object_count: gc_stats[:heap_live_slots],
+            gc_count: end_gc_stats[:count],
+            heap_pages: end_gc_stats[:heap_allocated_pages],
+            object_count: end_gc_stats[:heap_live_slots],
             request_id: data[:request_id],
             controller: data[:controller],
             action: data[:action]
@@ -158,7 +161,7 @@ module DeadBro
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],
           memory_usage: memory_usage_mb,
-          gc_stats: gc_stats,
+          gc_stats: end_gc_stats,
           sql_count: sql_count(data),
           sql_queries: sql_queries,
           transaction_events: transaction_events,
@@ -431,6 +434,7 @@ module DeadBro
           count: stats[:count] || 0,
           heap_allocated_pages: stats[:heap_allocated_pages] || 0,
           heap_sorted_pages: stats[:heap_sorted_pages] || 0,
+          heap_live_slots: stats[:heap_live_slots] || 0,
           total_allocated_objects: stats[:total_allocated_objects] || 0
         }
       else

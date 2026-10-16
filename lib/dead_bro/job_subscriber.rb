@@ -299,6 +299,7 @@ module DeadBro
           count: stats[:count] || 0,
           heap_allocated_pages: stats[:heap_allocated_pages] || 0,
           heap_sorted_pages: stats[:heap_sorted_pages] || 0,
+          heap_live_slots: stats[:heap_live_slots] || 0,
           total_allocated_objects: stats[:total_allocated_objects] || 0
         }
       else

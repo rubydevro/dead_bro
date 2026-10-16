@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+## [0.2.34] - 2026-09-30
+
+### Added
+- **`gc_pressure` now says whether the window's GC had finished.** `gc_state_at_end` is the GC's phase when a request or job window closes — `"none"`, `"marking"` or `"sweeping"`, from `GC.latest_gc_info(:state)` — sent with the other memory-tracking fields. Ruby marks and sweeps in steps between allocations, so a GC counted in the window is often still running when it closes, and until it finishes `heap_live_slots_growth` still counts garbage it hasn't freed. The dashboard uses it so a sample measured mid-GC isn't flagged as a possible leak. It's a single-key read; no hash is built.
+
+### Fixed
+- **The in-process leak detector's `object_count` was always 0.** `gc_stats` never read `heap_live_slots`, so every `MemoryLeakDetector` sample recorded `object_count: 0` and the `object_stats` / `memory_efficiency` figures from `DeadBro::MemoryHelpers.analyze_memory` were meaningless. `gc_stats` now includes `heap_live_slots` — in request and job payloads alike — and the request's leak sample and payload share one `GC.stat` read. `average_memory_per_object_kb` is now actually in KB; it divided RSS in MB by the object count.
+
 ## [0.2.32] - 2026-09-22
 
 ### Fixed

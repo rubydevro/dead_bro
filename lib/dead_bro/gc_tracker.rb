@@ -29,19 +29,29 @@ module DeadBro
       # Memory-tracking enrichment (a few extra GC.stat reads). Only the base
       # GC pressure fields above are truly always-on.
       if memory_tracking_enabled?
-        # Live heap slots — net retained objects. Comparing this delta against
-        # allocated_objects separates transient churn from genuine retention.
+        # Live heap slots, process-wide. How to read their delta is explained
+        # in self.diff below.
         base[:heap_live_slots] = stat[:heap_live_slots] || 0
         # Bytes malloc'd outside the Ruby object heap (big strings/buffers, e.g.
         # parsed JSON response bodies). These are point-in-time gauges reset by
         # GC, so we report the request-end value rather than a diff.
         base[:malloc_increase_bytes] = stat[:malloc_increase_bytes] || 0
         base[:oldmalloc_increase_bytes] = stat[:oldmalloc_increase_bytes] || 0
+        # The GC's phase right after those counters were read: :none, :marking
+        # or :sweeping. See self.diff below.
+        base[:gc_state] = gc_state
       end
 
       base
     rescue
       {}
+    end
+
+    # A single-key read: no hash is built. nil where the VM doesn't report it.
+    def self.gc_state
+      GC.latest_gc_info(:state) if GC.respond_to?(:latest_gc_info)
+    rescue
+      nil
     end
 
     def self.diff(before, after)
@@ -58,10 +68,19 @@ module DeadBro
 
       # Present only when the enrichment was captured (memory tracking enabled).
       if after.key?(:heap_live_slots) || before.key?(:heap_live_slots)
-        # Net change in live slots over the request. A small value alongside a
-        # large allocated_objects means the memory was transient (reclaimed by
-        # GC); a large value means objects were retained — the real leak signal.
+        # Signed net change in live slots over the request. Like allocated_objects
+        # it is process-wide: every thread's allocations and frees count. It only
+        # separates transient churn from retention once a GC in the window has
+        # finished: without one, slots are freed only by the lazy sweep of an
+        # earlier GC, and a GC still running when the window closes hasn't freed
+        # all its garbage yet. It goes negative when more is freed than
+        # allocated. Read it together with minor_gc_runs/major_gc_runs and
+        # gc_state_at_end.
         result[:heap_live_slots_growth] = (after[:heap_live_slots] || 0) - (before[:heap_live_slots] || 0)
+        # The GC's phase when the window closed: "none" once the last GC has
+        # finished, "marking" or "sweeping" while it's still running (Ruby marks
+        # and sweeps in steps between allocations).
+        result[:gc_state_at_end] = after[:gc_state].to_s if after[:gc_state]
         # Off-heap malloc pressure pending at request end (see snapshot).
         result[:malloc_increase_bytes] = after[:malloc_increase_bytes] || 0
         result[:oldmalloc_increase_bytes] = after[:oldmalloc_increase_bytes] || 0
