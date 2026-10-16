@@ -99,6 +99,26 @@ module DeadBro
       start_gc_tracking
     end
 
+    # When its shutdown timeout runs out, Sidekiq raises Sidekiq::Shutdown into
+    # every job still running and pushes those jobs back onto the queue: the run
+    # was cut short, not failed, and runs again after the restart. The same test
+    # as Sidekiq's own JobRetry#exception_caused_by_shutdown?, so an exception the
+    # job raised while handling the shutdown counts too.
+    def self.interrupted_by_shutdown?(exception)
+      return false unless exception && defined?(::Sidekiq::Shutdown)
+
+      seen = []
+      until exception.nil? || seen.include?(exception.object_id)
+        return true if exception.is_a?(::Sidekiq::Shutdown)
+
+        seen << exception.object_id
+        exception = exception.cause
+      end
+      false
+    rescue
+      false
+    end
+
     # Builds and ships one job run's payload — from perform.active_job, or from
     # SidekiqServerMiddleware for a native Sidekiq job. exception is nil for a
     # run that completed.
@@ -106,6 +126,12 @@ module DeadBro
       enqueued_at:, started:, finished:, exception:, error_handling: nil)
       begin
         if DeadBro.configuration.skip_tracking?
+          drain_job_tracking
+          return
+        end
+
+        # Not a run worth reporting, failed or otherwise: it will run again.
+        if interrupted_by_shutdown?(exception)
           drain_job_tracking
           return
         end

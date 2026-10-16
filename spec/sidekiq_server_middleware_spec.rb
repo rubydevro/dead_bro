@@ -66,6 +66,36 @@ RSpec.describe DeadBro::SidekiqServerMiddleware do
     expect(captured_payloads.last[:force]).to be true
   end
 
+  # A hard shutdown raises Sidekiq::Shutdown into the job and puts it back on the
+  # queue, so it runs again: an interrupted run, not a failed one.
+  describe "when Sidekiq cuts a run short to shut down" do
+    before { stub_const("Sidekiq::Shutdown", Class.new(Interrupt)) }
+
+    it "reports nothing and re-raises the interrupt" do
+      shutdown = Sidekiq::Shutdown.new
+
+      expect { middleware.call(Object.new, native_job, "critical") { raise shutdown } }
+        .to raise_error { |raised| expect(raised).to equal(shutdown) }
+      expect(captured_payloads).to be_empty
+      expect(DeadBro::SqlSubscriber.tracking_active?).to be false
+    end
+
+    it "also drops an exception the job raised while handling the shutdown" do
+      wrapped = begin
+        begin
+          raise Sidekiq::Shutdown
+        rescue Sidekiq::Shutdown
+          raise IOError, "stream closed"
+        end
+      rescue IOError => e
+        e
+      end
+
+      expect { middleware.call(Object.new, native_job, "critical") { raise wrapped } }.to raise_error(IOError)
+      expect(captured_payloads).to be_empty
+    end
+  end
+
   # Sidekiq 8 sends epoch milliseconds; earlier versions float seconds.
   it "reads enqueued_at in integer milliseconds as well" do
     middleware.call(Object.new, native_job("enqueued_at" => ((Time.now.to_f - 4) * 1000).to_i), "critical") {}
