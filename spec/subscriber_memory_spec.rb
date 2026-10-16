@@ -51,4 +51,13 @@ RSpec.describe DeadBro::Subscriber, "memory leak sampling" do
 
     expect(captured_payloads.first[:payload][:gc_stats][:heap_live_slots]).to be > 0
   end
+
+  # The server only judges retention once the window's GC has finished.
+  it "ships the GC phase at the end of the window in the payload's gc_pressure" do
+    described_class.subscribe!(client: stub_client)
+    DeadBro::GcTracker.start_request_tracking # SqlTrackingMiddleware does this in an app
+    instrument_request
+
+    expect(%w[none marking sweeping]).to include(captured_payloads.first[:payload][:gc_pressure][:gc_state_at_end])
+  end
 end
