@@ -91,7 +91,7 @@ module DeadBro
         state[:buckets][parent[:phase]] += now - parent[:checkpoint]
       end
       stack << {phase: phase, checkpoint: now}
-    rescue StandardError
+    rescue *DeadBro::CONTAINED_ERRORS
       # Best-effort only.
     end
 
@@ -110,7 +110,7 @@ module DeadBro
       if (parent = stack.last)
         parent[:checkpoint] = now
       end
-    rescue StandardError
+    rescue *DeadBro::CONTAINED_ERRORS
       # Best-effort only.
     end
 

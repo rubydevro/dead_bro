@@ -72,6 +72,9 @@ module DeadBro
 
     def log(severity, message)
       timestamp = Time.now.utc
+      # Messages often interpolate request data; scrubbed here so one bad byte
+      # doesn't send the payload down the client's slow retry path.
+      message = DeadBro::Sanitizer.string(message)
 
       buffer = (Thread.current[@thread_logs_key] ||= [])
       if buffer.length >= MAX_LOG_ENTRIES
@@ -80,7 +83,7 @@ module DeadBro
       else
         buffer << {
           sev: severity.to_s,
-          msg: message.to_s,
+          msg: message,
           time: timestamp.iso8601(3) # Include milliseconds for better precision
         }
       end

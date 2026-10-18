@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    dead_bro (0.2.33)
+    dead_bro (0.2.34)
 
 GEM
   remote: https://rubygems.org/
@@ -32,6 +32,7 @@ GEM
     logger (1.7.0)
     minitest (5.12.0)
     mutex_m (0.3.0)
+    rack (3.2.6)
     rake (13.3.1)
     rspec (3.13.2)
       rspec-core (~> 3.13.0)
@@ -64,6 +65,7 @@ DEPENDENCIES
   activesupport (~> 7.1.0)
   dead_bro!
   minitest (< 5.25)
+  rack
   rake (~> 13.0)
   rspec (~> 3.0)
   simplecov (~> 0.22)

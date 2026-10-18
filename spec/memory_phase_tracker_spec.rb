@@ -57,5 +57,14 @@ RSpec.describe DeadBro::MemoryPhaseTracker do
       expect { described_class.enter(:sql) }.not_to raise_error
       expect { described_class.leave(:sql) }.not_to raise_error
     end
+
+    # They run inside the host's queries and renders; see DeadBro::CONTAINED_ERRORS.
+    it "enter/leave never raise, even for errors outside StandardError" do
+      described_class.start_request_tracking
+      allow(GC).to receive(:stat).and_raise(SystemStackError)
+
+      expect { described_class.enter(:sql) }.not_to raise_error
+      expect { described_class.leave(:sql) }.not_to raise_error
+    end
   end
 end

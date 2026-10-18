@@ -30,6 +30,7 @@ module DeadBro
           if event && should_continue_tracking?
             Thread.current[THREAD_LOCAL_KEY] << event
           end
+        rescue *DeadBro::CONTAINED_ERRORS
         end
       rescue
       end
@@ -85,7 +86,9 @@ module DeadBro
 
     def self.safe_key(key)
       return nil if key.nil?
-      s = key.to_s
+      # Keys often embed request data (e.g. a throttle keyed by user agent);
+      # scrubbing here keeps one bad byte off the client's slow retry path.
+      s = DeadBro::Sanitizer.string(key)
       (s.length > 200) ? s[0, 200] + "…" : s
     rescue
       nil

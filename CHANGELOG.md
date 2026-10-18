@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [0.2.34] - 2026-09-29
+
+### Fixed
+- **A request carrying bytes that aren't valid UTF-8 (e.g. a bot's user agent with a stray `\xA1`) got a 500 from the host app and wasn't recorded.** Rack hands header values over as raw bytes, and the subscriber only stripped NUL bytes, so `JSON.dump` raised `JSON::GeneratorError` inside the `process_action.action_controller` listener. Rails re-raises a listener's exception into the request. `ErrorMiddleware` then reported that error with the same raw bytes, failed the same way and swallowed it. The user agent, path, host, params, exception messages and backtraces (and every `ErrorMiddleware` field) are now converted to valid UTF-8 before sending, with invalid bytes replaced by U+FFFD, and the request is recorded with the scrubbed value.
+- **A DeadBro listener or middleware can no longer raise into the host app.** Every `ActiveSupport::Notifications` callback (requests, jobs, SQL, cache, Redis, Elasticsearch, views, AR instantiation), the outgoing HTTP and Redis hooks, and `SqlTrackingMiddleware`'s setup and teardown now rescue the same set of errors and drop the metric instead. Teardown also finishes when one of its steps fails, so allocation tracing is still stopped. Before, a failing background job could have its own exception replaced by DeadBro's, and a job whose payload couldn't be built left its tracking state behind for the next job on the same worker thread. This is deliberately not `rescue Exception`: `Rack::Timeout`, `Sidekiq::Shutdown`, `Interrupt` and a plain `Timeout.timeout(sec)` that fire while DeadBro code runs still reach the host. `Timeout.timeout(sec, SomeStandardError)` can still be swallowed if it fires mid-callback, as it can by any `rescue => e`.
+- **SQL containing invalid UTF-8 (e.g. a binary literal inlined by an adapter that doesn't use prepared statements) failed the host's query.** The SQL sanitizer's regexes raised `ArgumentError`; the SQL is now scrubbed first and the query is tracked.
+- **A param key that isn't valid UTF-8 made DeadBro drop the request's params.** The sensitive-key check raised on it; keys are now scrubbed first, so the params are kept and still redacted. (Only reachable from a JSON body in an app with no `filter_parameters`; otherwise Rails fails the request on such a key first.)
+
+### Changed
+- Cache keys, Redis keys and commands, job arguments and log messages are scrubbed where they're captured, so a bad byte in one of them (e.g. a cache key built from the user agent) no longer costs the request a full copy of its payload.
+- If a payload still can't be JSON-encoded because some other string isn't valid UTF-8, the client retries once with every string in the payload scrubbed rather than losing it. Payloads that can't be serialized even then are dropped and counted in `DeadBro.client.serialization_failures`.
+
 ## [0.2.32] - 2026-09-22
 
 ### Fixed

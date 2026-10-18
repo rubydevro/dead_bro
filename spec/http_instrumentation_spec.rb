@@ -101,6 +101,19 @@ RSpec.describe DeadBro::HttpInstrumentation do
       conn = ::Faraday::Connection.new
       expect(conn.builder.handlers.map(&:klass)).to include(DeadBro::FaradayMiddleware)
     end
+
+    # Recording runs in an ensure around the host's request, where anything that
+    # escapes would replace the host's response; see DeadBro::CONTAINED_ERRORS.
+    it "returns the host's response even when recording the request raises" do
+      described_class.install_faraday!(DeadBro.client)
+      response = double("Faraday::Response", status: 200)
+      env = double("Faraday::Env")
+      allow(env).to receive(:url).and_raise(SystemStackError)
+
+      middleware = DeadBro::FaradayMiddleware.new(->(_env) { response })
+
+      expect(middleware.call(env)).to equal(response)
+    end
   end
 
   describe "elasticsearch host detection does not add to http_outgoing" do
