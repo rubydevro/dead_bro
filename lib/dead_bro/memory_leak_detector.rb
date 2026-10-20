@@ -9,7 +9,7 @@ module DeadBro
   #
   # Samples are taken at most once per SAMPLE_INTERVAL_SECONDS, by the
   # dispatcher worker that sends a request's payload (see
-  # Subscriber.record_leak_detection_sample) — never on the request thread.
+  # Subscriber.build_payload) — never on the request thread.
   # Recording one used to run on every request: append, copy up to
   # MAX_SAMPLES, regress — about 1,500 allocations per request once full.
   class MemoryLeakDetector

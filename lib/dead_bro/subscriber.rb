@@ -6,7 +6,8 @@ require "active_support/notifications"
 module DeadBro
   class Subscriber
     EVENT_NAME = "process_action.action_controller"
-    EMPTY_HASH = {}.freeze
+    # The notification fields build_payload reads (see capture_request).
+    PAYLOAD_KEYS = %i[controller action format method path status params view_runtime db_runtime request_id cache_hits cache_misses exception exception_object].freeze
 
     def self.subscribe!(client: Client.new)
       ActiveSupport::Notifications.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
@@ -68,23 +69,16 @@ module DeadBro
       end
     end
 
-    # What a sampled request leaves for the dispatcher: the notification fields
-    # the payload needs and references to everything the trackers collected,
-    # taken off their thread-locals before the next request on this thread
-    # resets them. Nothing in here is copied, sorted or formatted on the request
-    # thread. The notification payload itself isn't kept: it holds the Rack env
-    # and the response, which a backed-up dispatcher queue would keep alive.
+    # What a sampled request leaves for the dispatcher: what the trackers
+    # collected and the values only the request thread can read. The payload is
+    # built from it on a dispatcher worker (build_payload).
     RequestCapture = Struct.new(
-      :controller, :action, :format, :method, :path, :status, :params,
-      :view_runtime, :db_runtime, :request_id, :cache_hits, :cache_misses, :sql_count,
-      :exception, :exception_object,
-      :started, :duration_ms, :rack_duration_ms, :queue_duration_ms,
-      :sql_aggregates, :transaction_events, :cache_events, :redis_events,
-      :elasticsearch_events, :http_events, :view_aggregates, :watch_events,
-      :allocation_phases, :db_connection_wait_ms, :db_connection_checkouts,
-      :gc_start, :gc_end, :ar_instantiation_count, :cpu_time_ms, :memory_usage,
-      :memory_frame, :memory_end_time, :memory_events, :memory_performance,
-      :user_agent, :request_host, :user_id, :logs
+      :data, :started, :duration_ms, :rack_duration_ms, :queue_duration_ms,
+      :sql_aggregates, :transaction_events, :cache_events, :redis_events, :elasticsearch_events,
+      :db_connection_wait_ms, :db_connection_checkouts, :sql_count, :gc_start, :gc_end,
+      :ar_instantiation_count, :cpu_time_ms, :view_aggregates, :watch_events, :allocation_phases,
+      :memory_usage, :memory_events, :memory_performance, :memory_frame, :memory_end_time,
+      :http_events, :user_agent, :request_host, :user_id, :logs
     ) do
       # Called by the dispatcher worker (Client#post_metric).
       def to_payload
@@ -92,58 +86,54 @@ module DeadBro
       end
     end
 
-    # Runs on the request thread: stops every tracker and reads the values
-    # that only exist here (end-of-request counters, the signed-in user).
+    # Runs on the request thread: stops every tracker and keeps what it
+    # collected, unsorted and unformatted.
     def self.capture_request(started, finished, data)
       capture = RequestCapture.new
-      capture.controller = data[:controller]
-      capture.action = data[:action]
-      capture.format = data[:format]
-      capture.method = data[:method]
-      capture.path = data[:path] || (data[:request] && data[:request].path)
-      capture.status = data[:status]
-      capture.params = data[:params]
-      capture.view_runtime = data[:view_runtime]
-      capture.db_runtime = data[:db_runtime]
-      capture.request_id = data[:request_id]
-      capture.cache_hits = data[:cache_hits]
-      capture.cache_misses = data[:cache_misses]
-      capture.exception = data[:exception]
-      capture.exception_object = data[:exception_object]
+      # Only the fields build_payload reads: the notification payload itself
+      # holds the Rack env and the response, which a backed-up dispatcher queue
+      # would keep alive.
+      capture.data = data.slice(*PAYLOAD_KEYS)
       capture.started = started
       capture.duration_ms = ((finished - started) * 1000.0).round(2)
 
       # Time spent in Rack middleware before ActionController took over (routing, session, auth, etc.)
       rack_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
-      capture.rack_duration_ms = rack_start ? [((started - rack_start) * 1000.0), 0].max.round(2) : nil
+      capture.rack_duration_ms = rack_start ? ([((started - rack_start) * 1000.0), 0].max).round(2) : nil
       capture.queue_duration_ms = Thread.current[:dead_bro_queue_duration_ms]
 
-      # Stop SQL tracking (waits for pending EXPLAIN plans); aggregates stay unsorted until the worker.
+      # Stop SQL tracking and get collected queries (this was started by the request)
       capture.sql_aggregates = DeadBro::SqlSubscriber.stop_request_tracking(sorted: false)
       capture.transaction_events = DeadBro::SqlSubscriber.last_transaction_events
 
-      capture.cache_events = DeadBro::CacheSubscriber.stop_request_tracking if defined?(DeadBro::CacheSubscriber)
-      capture.redis_events = DeadBro::RedisSubscriber.stop_request_tracking if defined?(DeadBro::RedisSubscriber)
-      capture.elasticsearch_events = DeadBro::ElasticsearchSubscriber.stop_request_tracking if defined?(DeadBro::ElasticsearchSubscriber)
+      # Stop cache, redis, and elasticsearch tracking
+      capture.cache_events = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.stop_request_tracking : []
+      capture.redis_events = defined?(DeadBro::RedisSubscriber) ? DeadBro::RedisSubscriber.stop_request_tracking : []
+      capture.elasticsearch_events = defined?(DeadBro::ElasticsearchSubscriber) ? DeadBro::ElasticsearchSubscriber.stop_request_tracking : []
 
+      # Stop DB connection pool wait tracking
       if defined?(DeadBro::DbConnectionSubscriber)
         capture.db_connection_wait_ms = DeadBro::DbConnectionSubscriber.wait_ms
         capture.db_connection_checkouts = DeadBro::DbConnectionSubscriber.checkouts
         DeadBro::DbConnectionSubscriber.reset
       end
-      # Read on this thread (it asks the thread's ActiveRecord connection), and
-      # after the checkout counters above stopped, so its lease isn't counted.
+      # Read here: it asks this thread's ActiveRecord connection. After the
+      # checkout counters above stopped, so its lease isn't counted.
       capture.sql_count = sql_count(data)
 
-      # One GC snapshot closes the request: GC pressure, gc_stats, the
-      # lightweight memory diff and the leak-detection sample all read it.
+      # GC pressure — one snapshot closes the request; the worker diffs it
       capture.gc_start = DeadBro::GcTracker.take_start
       capture.gc_end = DeadBro::GcTracker.snapshot
 
-      capture.ar_instantiation_count = DeadBro::ArObjectTracker.stop_request_tracking if defined?(DeadBro::ArObjectTracker)
-      capture.cpu_time_ms = DeadBro::CpuTracker.stop_request_tracking if defined?(DeadBro::CpuTracker)
+      # Stop AR object instantiation tracking
+      capture.ar_instantiation_count = defined?(DeadBro::ArObjectTracker) ? DeadBro::ArObjectTracker.stop_request_tracking : nil
 
+      # Stop CPU time tracking — thread CPU time consumed by this request
+      capture.cpu_time_ms = defined?(DeadBro::CpuTracker) ? DeadBro::CpuTracker.stop_request_tracking : nil
+
+      # Stop view rendering tracking and get collected view events
       capture.view_aggregates = DeadBro::ViewRenderingSubscriber.take_aggregates
+
       capture.watch_events = defined?(DeadBro::WatchTracker) ? DeadBro::WatchTracker.stop_request_tracking : []
 
       # Per-phase allocation attribution (under memory tracking) — which phase
@@ -151,209 +141,202 @@ module DeadBro
       capture.allocation_phases = if DeadBro.configuration.memory_tracking_enabled && defined?(DeadBro::MemoryPhaseTracker)
         DeadBro::MemoryPhaseTracker.stop_request_tracking
       else
-        EMPTY_HASH
+        {}
       end
 
       capture.memory_usage = memory_usage_mb
+      # Stop memory tracking and get collected memory data. The decision to do
+      # heavy allocation tracking was made (and sampled) at request start.
       if Thread.current[:dead_bro_alloc_active] && defined?(DeadBro::MemoryTrackingSubscriber)
-        # Heavy allocation tracking (opt-in): its analysis reads the allocation
-        # trace, which has to happen before the sampler stops, so it stays here.
-        capture_detailed_memory(capture)
+        detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
+        memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
+
+        # Allocation-source + by-bytes-type diagnostics. Read the trace data
+        # before stopping the sampler (stop clears the source locations).
+        if defined?(DeadBro::AllocationSourceSampler)
+          growth = (detailed_memory[:memory_after].to_f - detailed_memory[:memory_before].to_f)
+          source_analysis = DeadBro::AllocationSourceSampler.analyze(memory_growth_mb: growth)
+          DeadBro::AllocationSourceSampler.stop
+          if source_analysis.is_a?(Hash) && source_analysis.any?
+            memory_performance[:allocation_sources] = source_analysis[:by_source]
+            memory_performance[:memsize_by_type] = source_analysis[:by_type_bytes]
+            memory_performance[:allocation_sample_rate] = source_analysis[:sample_rate]
+            memory_performance[:allocation_sources_skipped] = source_analysis[:skipped] if source_analysis[:skipped]
+          end
+        end
+
+        # Keep memory_events compact and user-friendly (no large raw arrays)
+        capture.memory_events = {
+          memory_before: detailed_memory[:memory_before],
+          memory_after: detailed_memory[:memory_after],
+          duration_seconds: detailed_memory[:duration_seconds],
+          allocations_count: (detailed_memory[:allocations] || []).length,
+          memory_snapshots_count: (detailed_memory[:memory_snapshots] || []).length,
+          large_objects_count: (detailed_memory[:large_objects] || []).length
+        }
+        capture.memory_performance = memory_performance
       else
+        # The worker works the lightweight metrics out from these readings.
         capture.memory_frame = DeadBro::LightweightMemoryTracker.take_frame
         capture.memory_end_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
       capture.http_events = DeadBro::EventBuffer.stop(:dead_bro_http_events)
-      capture.user_agent = raw_user_agent(data)
+      capture.user_agent = safe_user_agent(data)
       capture.request_host = raw_request_host(data)
       capture.user_id = extract_user_id(data)
       capture.logs = DeadBro.logger.logs
       capture
     end
 
-    # The allocation-tracking path: stop memory tracking and analyze it while
-    # the allocation trace is still available. The decision to do heavy
-    # allocation tracking was made (and sampled) at request start.
-    def self.capture_detailed_memory(capture)
-      detailed_memory = DeadBro::MemoryTrackingSubscriber.stop_request_tracking
-      memory_performance = DeadBro::MemoryTrackingSubscriber.analyze_memory_performance(detailed_memory)
-
-      # Allocation-source + by-bytes-type diagnostics. Read the trace data
-      # before stopping the sampler (stop clears the source locations).
-      if defined?(DeadBro::AllocationSourceSampler)
-        growth = (detailed_memory[:memory_after].to_f - detailed_memory[:memory_before].to_f)
-        source_analysis = DeadBro::AllocationSourceSampler.analyze(memory_growth_mb: growth)
-        DeadBro::AllocationSourceSampler.stop
-        if source_analysis.is_a?(Hash) && source_analysis.any?
-          memory_performance[:allocation_sources] = source_analysis[:by_source]
-          memory_performance[:memsize_by_type] = source_analysis[:by_type_bytes]
-          memory_performance[:allocation_sample_rate] = source_analysis[:sample_rate]
-          memory_performance[:allocation_sources_skipped] = source_analysis[:skipped] if source_analysis[:skipped]
-        end
-      end
-
-      # Keep memory_events compact and user-friendly (no large raw arrays)
-      capture.memory_events = {
-        memory_before: detailed_memory[:memory_before],
-        memory_after: detailed_memory[:memory_after],
-        duration_seconds: detailed_memory[:duration_seconds],
-        allocations_count: (detailed_memory[:allocations] || []).length,
-        memory_snapshots_count: (detailed_memory[:memory_snapshots] || []).length,
-        large_objects_count: (detailed_memory[:large_objects] || []).length
-      }
-      capture.memory_performance = memory_performance
-    end
-
-    # Runs on the dispatcher worker: turns a RequestCapture into the payload
-    # the backend receives — the same fields the request thread used to build.
+    # Runs on the dispatcher worker: the payload the listener used to build on
+    # the request thread, from a RequestCapture.
     def self.build_payload(capture)
+      data = capture.data
+      duration_ms = capture.duration_ms
+      rack_duration_ms = capture.rack_duration_ms
       sql_queries = DeadBro::SqlSubscriber.sort_aggregates(capture.sql_aggregates)
-      view_events = DeadBro::ViewRenderingSubscriber.sort_aggregates(capture.view_aggregates)
-      gc_end = capture.gc_end || EMPTY_HASH
+      transaction_events = capture.transaction_events
+      cache_events = capture.cache_events
+      redis_events = capture.redis_events
+      elasticsearch_events = capture.elasticsearch_events
+      db_connection_stats = {wait_ms: capture.db_connection_wait_ms&.round(2), checkouts: capture.db_connection_checkouts}
+      gc_end = capture.gc_end || {}
       gc_pressure = capture.gc_start ? DeadBro::GcTracker.diff(capture.gc_start, gc_end) : {}
-      cache_events = capture.cache_events || []
+      gc_stats = gc_stats_from(gc_end)
+      ar_instantiation_count = capture.ar_instantiation_count
+      cpu_time_ms = capture.cpu_time_ms
+      view_events = DeadBro::ViewRenderingSubscriber.sort_aggregates(capture.view_aggregates)
+      view_performance = DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events)
+      watch_events = capture.watch_events
+      allocation_phases = capture.allocation_phases
 
-      memory_events, memory_performance = if capture.memory_events
-        [capture.memory_events, capture.memory_performance]
+      if capture.memory_events
+        memory_events = capture.memory_events
+        memory_performance = capture.memory_performance
       else
-        lightweight_memory = DeadBro::LightweightMemoryTracker.result(
-          capture.memory_frame,
-          memory_after: capture.memory_usage,
-          gc_count_after: (gc_end[:minor_gc_count] || 0) + (gc_end[:major_gc_count] || 0),
-          heap_pages_after: gc_end[:heap_allocated_pages] || 0,
-          finished_at: capture.memory_end_time
-        )
+        lightweight_memory = DeadBro::LightweightMemoryTracker.result(capture.memory_frame,
+          memory_after: capture.memory_usage, gc_count_after: gc_stats[:count] || 0,
+          heap_pages_after: gc_stats[:heap_allocated_pages] || 0, finished_at: capture.memory_end_time)
         # Separate raw readings from derived performance metrics to avoid duplicating data
-        [
-          {
-            memory_before: lightweight_memory[:memory_before],
-            memory_after: lightweight_memory[:memory_after]
-          },
-          {
-            memory_growth_mb: lightweight_memory[:memory_growth_mb],
-            gc_count_increase: lightweight_memory[:gc_count_increase],
-            heap_pages_increase: lightweight_memory[:heap_pages_increase],
-            duration_seconds: lightweight_memory[:duration_seconds]
-          }
-        ]
+        memory_events = {
+          memory_before: lightweight_memory[:memory_before],
+          memory_after: lightweight_memory[:memory_after]
+        }
+        memory_performance = {
+          memory_growth_mb: lightweight_memory[:memory_growth_mb],
+          gc_count_increase: lightweight_memory[:gc_count_increase],
+          heap_pages_increase: lightweight_memory[:heap_pages_increase],
+          duration_seconds: lightweight_memory[:duration_seconds]
+        }
       end
 
-      gc_stats = gc_stats_from(gc_end)
-      record_leak_detection_sample(capture, gc_stats)
+      # Record memory sample for leak detection (only if memory tracking enabled),
+      # at most once a minute per process.
+      if DeadBro.configuration.memory_tracking_enabled && DeadBro::MemoryLeakDetector.sample_due?
+        DeadBro::MemoryLeakDetector.record_memory_sample({
+          memory_usage: capture.memory_usage,
+          gc_count: gc_stats[:count],
+          heap_pages: gc_stats[:heap_allocated_pages],
+          object_count: gc_stats[:heap_live_slots],
+          request_id: data[:request_id],
+          controller: data[:controller],
+          action: data[:action]
+        })
+      end
 
       # Everything captured during the request regardless of outcome — shared between
       # the error and success payloads below so an errored request (e.g. a lock wait
       # timeout raised mid-transaction) still ships the SQL/cache/memory/etc data that
-      # led up to it, not just the exception.
+      # led up to it, not just the exception. This used to be built only for the
+      # success path, so every errored request shipped with sql_count: 0 and no trace
+      # even though the gem had already captured it.
       detail_fields = {
-        view_runtime_ms: capture.view_runtime,
-        db_runtime_ms: capture.db_runtime,
+        view_runtime_ms: data[:view_runtime],
+        db_runtime_ms: data[:db_runtime],
         memory_usage: capture.memory_usage,
         gc_stats: gc_stats,
         sql_count: capture.sql_count,
         sql_queries: sql_queries,
-        transaction_events: capture.transaction_events || [],
+        transaction_events: transaction_events,
         http_outgoing: capture.http_events || [],
         cache_events: cache_events,
-        redis_events: capture.redis_events || [],
-        elasticsearch_events: capture.elasticsearch_events || [],
-        # The capture answers [:cache_hits] like the notification payload did.
-        cache_hits: cache_hits(capture),
-        cache_misses: cache_misses(capture),
+        redis_events: redis_events,
+        elasticsearch_events: elasticsearch_events,
+        cache_hits: cache_hits(data),
+        cache_misses: cache_misses(data),
         view_events: view_events,
-        view_performance: DeadBro::ViewRenderingSubscriber.analyze_view_performance(view_events),
+        view_performance: view_performance,
         memory_events: memory_events,
         memory_performance: memory_performance,
-        allocation_phases: capture.allocation_phases || {},
-        rack_duration_ms: capture.rack_duration_ms,
+        allocation_phases: allocation_phases,
+        rack_duration_ms: rack_duration_ms,
         queue_duration_ms: capture.queue_duration_ms,
-        db_connection_wait_ms: capture.db_connection_wait_ms&.round(2),
-        db_connection_checkouts: capture.db_connection_checkouts,
+        db_connection_wait_ms: db_connection_stats[:wait_ms],
+        db_connection_checkouts: db_connection_stats[:checkouts],
         gc_pressure: gc_pressure,
-        ar_instantiation_count: capture.ar_instantiation_count,
-        cpu_time_ms: capture.cpu_time_ms,
-        watch_events: capture.watch_events || [],
-        logs: capture.logs || []
+        ar_instantiation_count: ar_instantiation_count,
+        cpu_time_ms: cpu_time_ms,
+        watch_events: watch_events,
+        logs: capture.logs
       }
 
-      if capture.exception || capture.exception_object
-        build_error_payload(capture, detail_fields)
-      else
-        detail_fields.merge(
-          controller: capture.controller,
-          action: capture.action,
-          format: capture.format,
-          method: capture.method,
-          path: sanitize_string(capture.path),
-          status: capture.status,
-          # getutc, not utc: Time#utc converts in place, and other listeners
-          # of this event got the same Time object.
-          started_at: capture.started.getutc.iso8601(3),
-          duration_ms: capture.duration_ms,
+      # Report exceptions attached to this action (e.g. controller/view errors)
+      if data[:exception] || data[:exception_object]
+        exception_class, exception_message = data[:exception] if data[:exception]
+        exception_obj = data[:exception_object]
+        backtrace = Array(exception_obj&.backtrace).first(50).map { |line| sanitize_string(line) }
+
+        error_payload = detail_fields.merge(
+          controller: data[:controller],
+          action: data[:action],
+          format: data[:format],
+          method: data[:method],
+          path: safe_path(data),
+          status: data[:status],
+          duration_ms: duration_ms,
+          rails_env: DeadBro.env,
           host: DeadBro.safe_hostname,
           request_host: normalize_request_host(capture.request_host),
-          rails_env: DeadBro.env,
           process_kind: DeadBro.process_kind,
-          params: truncate_params(capture.params),
-          user_agent: normalize_user_agent(capture.user_agent),
-          user_id: capture.user_id
+          params: safe_params(data),
+          user_agent: capture.user_agent,
+          user_id: capture.user_id,
+          exception_class: exception_class || exception_obj&.class&.name,
+          message: sanitize_string((exception_message || exception_obj&.message).to_s[0, 1000]),
+          backtrace: backtrace,
+          fingerprint: compute_error_fingerprint(exception_obj),
+          cause_chain: build_cause_chain(exception_obj),
+          error: true
         )
+        return error_payload
       end
-    end
 
-    # Report exceptions attached to this action (e.g. controller/view errors)
-    def self.build_error_payload(capture, detail_fields)
-      exception_class, exception_message = capture.exception if capture.exception
-      exception_obj = capture.exception_object
-      backtrace = Array(exception_obj&.backtrace).first(50).map { |line| sanitize_string(line) }
-
-      detail_fields.merge(
-        controller: capture.controller,
-        action: capture.action,
-        format: capture.format,
-        method: capture.method,
-        path: sanitize_string(capture.path),
-        status: capture.status,
-        duration_ms: capture.duration_ms,
-        rails_env: DeadBro.env,
+      payload = detail_fields.merge(
+        controller: data[:controller],
+        action: data[:action],
+        format: data[:format],
+        method: data[:method],
+        path: safe_path(data),
+        status: data[:status],
+        # getutc, not utc: Time#utc converts in place, and other listeners of
+        # this event got the same Time object.
+        started_at: capture.started.getutc.iso8601(3),
+        duration_ms: duration_ms,
         host: DeadBro.safe_hostname,
         request_host: normalize_request_host(capture.request_host),
+        rails_env: DeadBro.env,
         process_kind: DeadBro.process_kind,
-        params: truncate_params(capture.params),
-        user_agent: normalize_user_agent(capture.user_agent),
-        user_id: capture.user_id,
-        exception_class: exception_class || exception_obj&.class&.name,
-        message: sanitize_string((exception_message || exception_obj&.message).to_s[0, 1000]),
-        backtrace: backtrace,
-        fingerprint: compute_error_fingerprint(exception_obj),
-        cause_chain: build_cause_chain(exception_obj),
-        error: true
+        params: safe_params(data),
+        user_agent: capture.user_agent,
+        user_id: capture.user_id
       )
+      payload
     end
 
     def self.error_event_name(data)
       exception_class, = data[:exception] if data[:exception]
       (exception_class || data[:exception_object]&.class&.name || "exception").to_s
-    end
-
-    # In-process leak detection: one sample a minute, taken on the dispatcher
-    # worker from values the request already read. It used to append a sample
-    # and run a regression over up to 500 of them on every request thread.
-    def self.record_leak_detection_sample(capture, gc_stats)
-      return unless DeadBro.configuration.memory_tracking_enabled
-      return unless DeadBro::MemoryLeakDetector.sample_due?
-
-      DeadBro::MemoryLeakDetector.record_memory_sample({
-        memory_usage: capture.memory_usage,
-        gc_count: gc_stats[:count],
-        heap_pages: gc_stats[:heap_allocated_pages],
-        object_count: gc_stats[:heap_live_slots],
-        request_id: capture.request_id,
-        controller: capture.controller,
-        action: capture.action
-      })
-    rescue *DeadBro::CONTAINED_ERRORS
     end
 
     # Release per-subscriber thread-local state when we've decided not to build
@@ -393,12 +376,9 @@ module DeadBro
     end
 
     def self.safe_params(data)
-      truncate_params(data[:params])
-    end
+      return {} unless data[:params]
 
-    def self.truncate_params(params)
-      return {} unless params
-
+      params = data[:params]
       begin
         params = params.to_unsafe_h if params.respond_to?(:to_unsafe_h)
       rescue
@@ -501,45 +481,45 @@ module DeadBro
     end
 
     def self.safe_user_agent(data)
-      normalize_user_agent(raw_user_agent(data))
-    end
-
-    # The user agent header as sent — read on the request thread (a lookup, no
-    # copy), scrubbed and truncated later by normalize_user_agent.
-    def self.raw_user_agent(data)
-      # Prefer request object if available
-      if data[:request]
-        if data[:request].respond_to?(:user_agent)
-          return data[:request].user_agent
-        elsif data[:request].respond_to?(:env)
-          return data[:request].env && data[:request].env["HTTP_USER_AGENT"]
-        end
-        return nil
-      end
-
-      # Fallback to headers object/hash if present in notification data
-      if data[:headers]
-        headers = data[:headers]
-        if headers.respond_to?(:[])
-          return headers["HTTP_USER_AGENT"] || headers["User-Agent"] || headers["user-agent"]
-        elsif headers.respond_to?(:to_h)
-          h = begin
-            headers.to_h
-          rescue
-            {}
+      begin
+        # Prefer request object if available
+        if data[:request]
+          ua = nil
+          if data[:request].respond_to?(:user_agent)
+            ua = data[:request].user_agent
+          elsif data[:request].respond_to?(:env)
+            ua = data[:request].env && data[:request].env["HTTP_USER_AGENT"]
           end
-          return h["HTTP_USER_AGENT"] || h["User-Agent"] || h["user-agent"]
+          return sanitize_string(ua)[0..200]
         end
+
+        # Fallback to headers object/hash if present in notification data
+        if data[:headers]
+          headers = data[:headers]
+          if headers.respond_to?(:[])
+            ua = headers["HTTP_USER_AGENT"] || headers["User-Agent"] || headers["user-agent"]
+            return sanitize_string(ua)[0..200]
+          elsif headers.respond_to?(:to_h)
+            h = begin
+              headers.to_h
+            rescue
+              {}
+            end
+            ua = h["HTTP_USER_AGENT"] || h["User-Agent"] || h["user-agent"]
+            return sanitize_string(ua)[0..200]
+          end
+        end
+
+        # Fallback to env hash if present in notification data
+        if data[:env].is_a?(Hash)
+          ua = data[:env]["HTTP_USER_AGENT"]
+          return sanitize_string(ua)[0..200]
+        end
+
+        ""
+      rescue
+        ""
       end
-
-      # Fallback to env hash if present in notification data
-      data[:env]["HTTP_USER_AGENT"] if data[:env].is_a?(Hash)
-    rescue
-      nil
-    end
-
-    def self.normalize_user_agent(raw)
-      sanitize_string(raw)[0..200]
     rescue
       ""
     end
