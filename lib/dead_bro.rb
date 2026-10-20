@@ -31,6 +31,7 @@ module DeadBro
   autoload :Logger, "dead_bro/logger"
   autoload :WatchTracker, "dead_bro/watch_tracker"
   autoload :Sanitizer, "dead_bro/sanitizer"
+  autoload :EventBuffer, "dead_bro/event_buffer"
   begin
     require "dead_bro/railtie"
   rescue LoadError

@@ -41,9 +41,22 @@ module DeadBro
     def self.stop_request_tracking
       wait_ms   = Thread.current[WAIT_KEY]
       checkouts = Thread.current[COUNT_KEY]
+      reset
+      { wait_ms: wait_ms&.round(2), checkouts: checkouts }
+    end
+
+    # Readers and reset for a caller that doesn't need the Hash.
+    def self.wait_ms
+      Thread.current[WAIT_KEY]
+    end
+
+    def self.checkouts
+      Thread.current[COUNT_KEY]
+    end
+
+    def self.reset
       Thread.current[WAIT_KEY]  = nil
       Thread.current[COUNT_KEY] = nil
-      { wait_ms: wait_ms&.round(2), checkouts: checkouts }
     end
   end
 end

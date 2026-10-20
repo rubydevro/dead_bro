@@ -293,7 +293,7 @@ RSpec.describe DeadBro::SqlSubscriber do
 
     queries = sql_subscriber.stop_request_tracking
     expect(queries).to be_a(Array)
-    expect(Thread.current[:dead_bro_sql_queries]).to be_nil
+    expect(Thread.current[:dead_bro_sql_queries]).to be_empty
   end
 
   describe "nested job tracking (stack)" do
@@ -370,7 +370,7 @@ RSpec.describe DeadBro::SqlSubscriber do
       outer_queries = sql_subscriber.stop_request_tracking
       expect(outer_queries.length).to eq(2)
       expect(outer_queries.map { |a| a[:sql] }).to contain_exactly("SELECT * FROM outer1", "SELECT * FROM outer2")
-      expect(Thread.current[:dead_bro_sql_queries]).to be_nil
+      expect(Thread.current[:dead_bro_sql_queries]).to be_empty
     end
   end
 
@@ -656,5 +656,20 @@ RSpec.describe DeadBro::SqlSubscriber do
       expect(sql_subscriber).to have_received(:interpolate_sql_with_binds)
       expect(connection).to have_received(:select_all)
     end
+  end
+
+  it "builds a request's frames only when it runs SQL" do
+    sql_subscriber.subscribe!
+    sql_subscriber.start_request_tracking
+
+    expect(sql_subscriber.current_queries_array).to be_frozen.and be_empty
+    expect(Thread.current[sql_subscriber::THREAD_LOCAL_AGGREGATES_KEY].last).to be_nil
+
+    ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT * FROM shipments WHERE id = $1", name: "Shipment Load") {}
+
+    expect(sql_subscriber.current_queries_array.size).to eq(1)
+    expect(sql_subscriber.stop_request_tracking.first[:count]).to eq(1)
+  ensure
+    sql_subscriber.reset_request_tracking
   end
 end

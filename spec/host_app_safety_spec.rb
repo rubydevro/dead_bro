@@ -231,7 +231,7 @@ RSpec.describe "DeadBro never raising into the host app" do
 
     it "still stops the sampler when an earlier teardown step raises" do
       db_connections = double("DbConnectionSubscriber", start_request_tracking: nil)
-      allow(db_connections).to receive(:stop_request_tracking).and_raise(NoMethodError)
+      allow(db_connections).to receive(:reset).and_raise(NoMethodError)
       stub_const("DeadBro::DbConnectionSubscriber", db_connections)
 
       expect(described_class.new(app).call({})).to eq([200, {}, ["ok"]])

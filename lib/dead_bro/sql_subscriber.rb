@@ -21,6 +21,11 @@ module DeadBro
     # Transaction control breadcrumbs (BEGIN/COMMIT/ROLLBACK/...) are cheap and rare
     # compared to queries, but a pathological retry loop could still spam them.
     MAX_TRACKED_TXN_EVENTS = 200
+    # A tracking context's frames until its first query or transaction event,
+    # so a request that runs no SQL allocates nothing for them.
+    NO_QUERIES = [].freeze
+    NO_AGGREGATES = {}.freeze
+    NO_TXN_EVENTS = [].freeze
 
     # Number of identical queries within one request that triggers N+1 detection.
     N_PLUS_ONE_THRESHOLD = 5
@@ -91,11 +96,12 @@ module DeadBro
       stack.last
     end
 
-    # Current transaction-events array (top of stack); nil if no active tracking.
+    # Current transaction-events array (top of stack, created by the first
+    # event); nil if no active tracking.
     def self.current_txn_events_array
       stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
-      return nil unless stack.is_a?(Array) && stack.any?
-      stack.last
+      return nil unless stack.is_a?(Array) && !stack.empty?
+      stack[-1] ||= []
     end
 
     # Sum of SQL counts and durations recorded so far in the active tracking
@@ -209,8 +215,9 @@ module DeadBro
 
         cc_stack     = Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]
         agg_stack    = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
-        call_counts  = cc_stack.is_a?(Array)  ? cc_stack.last  : nil
-        aggregates_h = agg_stack.is_a?(Array) ? agg_stack.last : nil
+        # Both are created by the context's first query (see start_request_tracking).
+        call_counts  = (cc_stack[-1] ||= {}) if cc_stack.is_a?(Array) && !cc_stack.empty?
+        aggregates_h = (agg_stack[-1] ||= {}) if agg_stack.is_a?(Array) && !agg_stack.empty?
         normalized_key = nil
 
         if call_counts && aggregates_h
@@ -269,6 +276,7 @@ module DeadBro
         end
 
         if should_continue_tracking?(current, MAX_TRACKED_QUERIES)
+          current = Thread.current[THREAD_LOCAL_KEY][-1] = [] if current.frozen?
           current << query_info
         end
       rescue *DeadBro::CONTAINED_ERRORS
@@ -276,29 +284,42 @@ module DeadBro
     end
 
     def self.start_request_tracking
-      # Stack allows nested job tracking (e.g. one job performing others in the same thread)
-      (Thread.current[THREAD_LOCAL_KEY] ||= []) << []
-      Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = {}
-      Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = {}
-      Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = {}
-      Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = []
-      (Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] ||= []) << {}
-      (Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  ||= []) << {}
-      (Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]  ||= []) << []
+      # Stack allows nested job tracking (e.g. one job performing others in the same thread).
+      # This context's frames are placeholders until its first query or
+      # transaction event; the maps are created by the first query, and the
+      # stacks stay on the thread between requests.
+      (Thread.current[THREAD_LOCAL_KEY] ||= []) << NO_QUERIES
+      Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = nil
+      Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = nil
+      Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = nil
+      Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
+      (Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] ||= []) << nil
+      (Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  ||= []) << nil
+      (Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]  ||= []) << nil
+    end
+
+    # The aggregates (one per normalized statement), slowest total first: the
+    # payload's sql_queries. Takes what stop_request_tracking(sorted: false)
+    # returns.
+    def self.sort_aggregates(aggregates)
+      values = aggregates.is_a?(Hash) ? aggregates.values : Array(aggregates)
+      values.sort_by { |a| -a[:total_duration_ms] }
     end
 
     # wait_for_explains: false on drain paths (excluded / sampled-out requests)
     # where the result is discarded — no reason to block on pending plans.
-    def self.stop_request_tracking(wait_for_explains: true)
+    # sorted: false returns the aggregates Hash as is, for a caller that sorts
+    # them later off the request thread (see sort_aggregates).
+    def self.stop_request_tracking(wait_for_explains: true, sorted: true)
       wait_for_pending_explains(EXPLAIN_WAIT_TIMEOUT_SECONDS) if wait_for_explains
 
       stack = Thread.current[THREAD_LOCAL_KEY]
-      raw_queries = (stack.is_a?(Array) && stack.any?) ? stack.pop : []
+      raw_queries = (stack.is_a?(Array) && !stack.empty?) ? stack.pop : NO_QUERIES
 
       agg_stack    = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
-      aggregates_h = (agg_stack.is_a?(Array) && agg_stack.any?) ? agg_stack.pop : {}
+      aggregates_h = ((agg_stack.is_a?(Array) && !agg_stack.empty?) ? agg_stack.pop : nil) || NO_AGGREGATES
       cc_stack     = Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]
-      cc_stack.pop if cc_stack.is_a?(Array) && cc_stack.any?
+      cc_stack.pop if cc_stack.is_a?(Array) && !cc_stack.empty?
 
       # Transaction-control breadcrumbs are popped here, as part of this method's
       # existing lifecycle, rather than through a separate stop_transaction_tracking
@@ -312,8 +333,7 @@ module DeadBro
       # reads last_transaction_events immediately afterward.
       txn_stack = Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]
       Thread.current[:dead_bro_last_transaction_events] =
-        (txn_stack.is_a?(Array) && txn_stack.any?) ? txn_stack.pop : []
-      Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY] = nil if txn_stack.nil? || txn_stack.empty?
+        ((txn_stack.is_a?(Array) && !txn_stack.empty?) ? txn_stack.pop : nil) || NO_TXN_EVENTS
 
       # Fold any completed EXPLAIN plans from raw queries into their aggregate entry
       raw_queries.each do |q|
@@ -324,16 +344,14 @@ module DeadBro
       end
 
       if stack.nil? || stack.empty?
-        Thread.current[THREAD_LOCAL_KEY] = nil
+        # The stacks themselves stay on the thread for its next request.
         Thread.current[THREAD_LOCAL_ALLOC_START_KEY] = nil
         Thread.current[THREAD_LOCAL_ALLOC_RESULTS_KEY] = nil
         Thread.current[THREAD_LOCAL_BACKTRACE_KEY] = nil
         Thread.current[THREAD_LOCAL_EXPLAIN_PENDING_KEY] = nil
-        Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY] = nil
-        Thread.current[THREAD_LOCAL_AGGREGATES_KEY]  = nil
       end
 
-      aggregates_h.values.sort_by { |a| -a[:total_duration_ms] }
+      sorted ? sort_aggregates(aggregates_h) : aggregates_h
     end
 
     # The transaction-control breadcrumbs captured during the tracking window that
@@ -345,6 +363,15 @@ module DeadBro
     # breadcrumbs instead of an empty result.
     def self.last_transaction_events
       Thread.current[:dead_bro_last_transaction_events].tap { Thread.current[:dead_bro_last_transaction_events] = nil } || []
+    end
+
+    # Drops every tracking frame on this thread (a request that never reached
+    # stop_request_tracking, e.g. one no controller handled). Keeps the stacks.
+    def self.reset_request_tracking
+      Thread.current[THREAD_LOCAL_KEY]&.clear
+      Thread.current[THREAD_LOCAL_CALL_COUNTS_KEY]&.clear
+      Thread.current[THREAD_LOCAL_AGGREGATES_KEY]&.clear
+      Thread.current[THREAD_LOCAL_TXN_EVENTS_KEY]&.clear
     end
 
     # Upper bound on pending EXPLAIN threads per request. Each thread checks
@@ -777,11 +804,12 @@ module DeadBro
 end
 
 module DeadBro
-  # Listener that records GC allocation deltas per SQL event id
+  # Listener that records GC allocation deltas per SQL event id. Single-key
+  # GC.stat reads: a bare GC.stat builds a ~45-entry Hash on every query.
   class SqlAllocListener
     def start(name, id, payload)
       map = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY] ||= {})
-      map[id] = GC.stat[:total_allocated_objects] if defined?(GC) && GC.respond_to?(:stat)
+      map[id] = GC.stat(:total_allocated_objects) if defined?(GC) && GC.respond_to?(:stat)
       # Backtraces used to be captured here for every SQL event, which was
       # dominating CPU on N+1-heavy requests (100s of full Thread#backtrace
       # allocations). The main subscriber now captures a trimmed backtrace
@@ -795,7 +823,7 @@ module DeadBro
 
       start_count = start_map.delete(id)
       end_count = begin
-        GC.stat[:total_allocated_objects]
+        GC.stat(:total_allocated_objects)
       rescue
         nil
       end

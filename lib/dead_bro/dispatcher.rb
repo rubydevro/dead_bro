@@ -38,15 +38,18 @@ module DeadBro
       install_at_exit_hook
     end
 
-    # Schedule a block for background execution. Never blocks the caller: if the
+    # Schedule work for background execution: a block, or any object that
+    # responds to #call (lets a caller on the host's request thread hand over a
+    # job without allocating a Proc for it). Never blocks the caller: if the
     # queue is full the job is dropped and `dropped_count` is incremented.
-    def dispatch(&block)
-      return false unless block_given?
+    def dispatch(job = nil, &block)
+      job ||= block
+      return false unless job
       return false if @shutting_down
 
       if self.class.inline
         begin
-          block.call
+          job.call
         rescue
           # Match worker semantics — swallow job errors.
         end
@@ -54,7 +57,7 @@ module DeadBro
       end
 
       ensure_workers_alive!
-      @queue.push(block, true) # non-blocking
+      @queue.push(job, true) # non-blocking
       true
     rescue ThreadError
       @mutex.synchronize { @dropped += 1 }

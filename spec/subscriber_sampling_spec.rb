@@ -105,7 +105,8 @@ RSpec.describe DeadBro::Subscriber, "per-request-type sampling" do
     instrument(controller: "ProgramsController", action: "update", exception: ["ActiveRecord::LockWaitTimeout", exception.message], exception_object: exception)
 
     expect(captured_payloads.size).to eq(1)
-    payload = captured_payloads.first[:payload]
+    # The subscriber hands over a capture; the dispatcher worker builds the Hash.
+    payload = captured_payloads.first[:payload].to_payload
     expect(payload[:error]).to be true
     expect(payload[:sql_queries].length).to eq(1)
     expect(payload[:sql_queries].map { |q| q[:sql] }).to include("UPDATE tags SET taggings_count = taggings_count + 1 WHERE id = 795")

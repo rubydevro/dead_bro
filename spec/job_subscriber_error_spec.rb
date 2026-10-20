@@ -122,7 +122,7 @@ RSpec.describe DeadBro::JobSubscriber, "job exception payload" do
     # start_request_tracking (via perform_start.active_job / the fallback here)
     # also pushes onto the transaction-events stack; stop_request_tracking alone
     # would leave it unpopped for every subsequent job on this Sidekiq thread.
-    expect(Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY]).to be_nil
+    expect(Array(Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY])).to be_empty
   end
 
   it "does not leak the transaction-events thread-local when a job is excluded (drain_job_tracking path)" do
@@ -133,6 +133,6 @@ RSpec.describe DeadBro::JobSubscriber, "job exception payload" do
     ActiveSupport::Notifications.instrument("perform.active_job", {job: mock_job}) {}
 
     expect(captured_payloads).to be_empty
-    expect(Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY]).to be_nil
+    expect(Array(Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY])).to be_empty
   end
 end

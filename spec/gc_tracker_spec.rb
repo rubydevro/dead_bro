@@ -110,4 +110,27 @@ RSpec.describe DeadBro::GcTracker do
       expect(Thread.current[described_class::THREAD_KEY]).to be_nil
     end
   end
+
+  describe "reading the counters" do
+    it "uses single-key GC.stat reads, which allocate no Hash" do
+      described_class.snapshot # the supported keys are looked up once
+      allow(GC).to receive(:stat).and_call_original
+
+      described_class.snapshot
+
+      expect(GC).not_to have_received(:stat).with(no_args)
+    end
+
+    it "leaves out counters this Ruby doesn't report" do
+      supported = GC.stat.keys
+      expect(described_class.snapshot.keys - [:gc_time_ns]).to all(satisfy { |key| supported.include?(key) })
+    end
+
+    it ".take_start hands over the start snapshot and clears it" do
+      described_class.start_request_tracking
+
+      expect(described_class.take_start).to include(:minor_gc_count, :total_allocated_objects)
+      expect(Thread.current[described_class::THREAD_KEY]).to be_nil
+    end
+  end
 end

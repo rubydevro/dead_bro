@@ -145,4 +145,25 @@ RSpec.describe DeadBro::Subscriber do
       )
     end
   end
+
+  describe ".extract_user_id" do
+    let(:request_with) { ->(env) { Struct.new(:env).new(env) } }
+
+    it "reads the signed-in user from Warden in the request's env" do
+      warden = double("Warden::Proxy", user: double("User", id: 42))
+
+      expect(described_class.extract_user_id({request: request_with.call({"warden" => warden})})).to eq(42)
+    end
+
+    it "returns nil without raising when there is no Warden or nobody is signed in" do
+      raised = []
+      trace = TracePoint.new(:raise) { |tp| raised << tp.raised_exception }
+
+      trace.enable do
+        expect(described_class.extract_user_id({request: request_with.call({})})).to be_nil
+        expect(described_class.extract_user_id({request: request_with.call({"warden" => double(user: nil)})})).to be_nil
+      end
+      expect(raised).to be_empty
+    end
+  end
 end

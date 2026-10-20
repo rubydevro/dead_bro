@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+## [0.2.38] - 2026-10-19
+
+### Changed
+- **DeadBro's own cost in `SqlTrackingMiddleware` is down from about 0.6 ms and 1,700 allocations per request to about 0.06 ms and 15** (its setup, teardown and `process_action.action_controller` listener; default settings, measured on a show page with 5 queries and 3 renders in a Rails 8.1 app in production mode; Skylight had attributed 10 ms and 121 allocations per request to this middleware in production, with allocation tracking on). The listener now only collects: it takes what the request's trackers recorded off their thread-locals and hands it to the dispatcher. Building the payload (sorting the SQL and view aggregates, the view analysis, sanitizing and truncating params, user agent and host), the JSON encoding and setting up the HTTP request all run on the dispatcher worker, as heartbeats and monitor stats now do too. `sent_at` is still the time the metric was reported, not the time the worker sent it.
+- **Leak detection no longer runs on every request.** Each request appended a sample and ran a regression over up to 500 of them on the request thread — about 1,500 allocations per request once the buffer was full. The dispatcher now records one sample a minute per process, and the detection window is an hour, so one-a-minute samples still reach the 10 the analysis needs. `DeadBro::MemoryHelpers` and `MemoryLeakDetector.get_memory_analysis` work as before.
+- **GC counters are read with single-key `GC.stat(:key)` calls,** which allocate nothing: one snapshot when the request starts and one when it ends, shared by `gc_pressure`, `gc_stats` and the memory metrics. Before, the listener built the full `GC.stat` Hash four times per request, and the SQL allocation listener twice per query.
+- Request setup no longer allocates for what a request doesn't use: the log buffer, `DeadBro.watch` spans (unless `watch_enabled`), per-phase allocation state and the per-request SQL frames are created by their first use, and cache/Redis/Elasticsearch/HTTP event buffers that stayed empty are reused by the next request on the thread.
+- Looking up the signed-in user no longer copies the Rack env, or raises and rescues a `NoMethodError` on every request where nobody is signed in. The user id reported is the same.
+- The README now puts allocation tracking at ~10–20 ms per tracked request (it said ~2–5 ms); it is still off by default.
+
 ## [0.2.34] - 2026-09-29
 
 ### Fixed

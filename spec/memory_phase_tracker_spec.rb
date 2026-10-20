@@ -67,4 +67,12 @@ RSpec.describe DeadBro::MemoryPhaseTracker do
       expect { described_class.leave(:sql) }.not_to raise_error
     end
   end
+
+  describe "cost" do
+    it "allocates nothing for a request that enters no phase" do
+      described_class.start_request_tracking
+      expect(Thread.current[described_class::THREAD_KEY]).to equal(described_class::STARTED)
+      expect(described_class.stop_request_tracking).to eq({})
+    end
+  end
 end

@@ -4,6 +4,12 @@ module DeadBro
   module GcTracker
     THREAD_KEY = :dead_bro_gc_start
 
+    # Read one key at a time: GC.stat(:key) returns an Integer and allocates
+    # nothing, where a bare GC.stat builds a ~45-entry Hash. Keys the running
+    # Ruby doesn't report are left out (heap_sorted_pages is gone since 3.4).
+    BASE_KEYS = %i[minor_gc_count major_gc_count total_allocated_objects heap_allocated_pages heap_sorted_pages].freeze
+    MEMORY_KEYS = %i[heap_live_slots malloc_increase_bytes oldmalloc_increase_bytes].freeze
+
     def self.start_request_tracking
       Thread.current[THREAD_KEY] = snapshot
     end
@@ -16,32 +22,48 @@ module DeadBro
       Thread.current[THREAD_KEY] = nil
     end
 
+    # The request's start snapshot, removed from the thread (nil when there is
+    # none). The caller diffs it against its own end snapshot.
+    def self.take_start
+      Thread.current[THREAD_KEY]
+    ensure
+      Thread.current[THREAD_KEY] = nil
+    end
+
     def self.snapshot
       return {} unless defined?(GC) && GC.respond_to?(:stat)
-      stat = GC.stat
-      base = {
-        minor_gc_count: stat[:minor_gc_count] || 0,
-        major_gc_count: stat[:major_gc_count] || 0,
-        total_allocated_objects: stat[:total_allocated_objects] || 0,
-        gc_time_ns: GC.respond_to?(:total_time) ? GC.total_time : nil
-      }
 
-      # Memory-tracking enrichment (a few extra GC.stat reads). Only the base
-      # GC pressure fields above are truly always-on.
+      base = {}
+      base_keys.each { |key| base[key] = GC.stat(key) }
+      base[:gc_time_ns] = GC.respond_to?(:total_time) ? GC.total_time : nil
+
+      # Memory-tracking enrichment (a few extra single-key reads). Only the
+      # base GC pressure fields above are truly always-on.
       if memory_tracking_enabled?
         # Live heap slots — net retained objects. Comparing this delta against
         # allocated_objects separates transient churn from genuine retention.
-        base[:heap_live_slots] = stat[:heap_live_slots] || 0
         # Bytes malloc'd outside the Ruby object heap (big strings/buffers, e.g.
-        # parsed JSON response bodies). These are point-in-time gauges reset by
-        # GC, so we report the request-end value rather than a diff.
-        base[:malloc_increase_bytes] = stat[:malloc_increase_bytes] || 0
-        base[:oldmalloc_increase_bytes] = stat[:oldmalloc_increase_bytes] || 0
+        # parsed JSON response bodies) are point-in-time gauges reset by GC, so
+        # diff reports their request-end value.
+        memory_keys.each { |key| base[key] = GC.stat(key) }
       end
 
       base
     rescue
       {}
+    end
+
+    def self.base_keys
+      @base_keys ||= supported_keys(BASE_KEYS)
+    end
+
+    def self.memory_keys
+      @memory_keys ||= supported_keys(MEMORY_KEYS)
+    end
+
+    def self.supported_keys(keys)
+      reported = GC.stat.keys
+      keys.select { |key| reported.include?(key) }.freeze
     end
 
     def self.diff(before, after)

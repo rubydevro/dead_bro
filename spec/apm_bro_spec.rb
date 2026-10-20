@@ -662,6 +662,33 @@ RSpec.describe DeadBro do
       expect(logger.logs.length).to eq(0)
     end
 
+    it "leaves the logs an earlier request handed to its payload as they were" do
+      logger.info("Shipment 7 dispatched")
+      handed_over = logger.logs
+
+      logger.clear
+      logger.info("Shipment 8 dispatched")
+
+      expect(handed_over.map { |l| l[:msg] }).to eq(["Shipment 7 dispatched"])
+    end
+
+    it "allocates no buffer until something is logged" do
+      logger.clear
+
+      expect(logger.logs).to be_frozen.and be_empty
+    end
+
+    it "hands out a copy, so lines logged later don't reach a payload that took the logs" do
+      logger.clear
+      logger.info("Card for order 7 declined")
+      handed_over = logger.logs
+
+      logger.info("Order 7 marked unpaid")
+
+      expect(handed_over.map { |l| l[:msg] }).to eq(["Card for order 7 declined"])
+      expect(logger.logs.size).to eq(2)
+    end
+
     it "includes timestamps in logs" do
       logger.info("Test")
       log = logger.logs.first

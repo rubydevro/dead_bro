@@ -24,14 +24,21 @@ RSpec.describe DeadBro::SqlAllocListener do
   end
 
   describe "#start" do
-    it "records the starting allocation count" do
-      allow(GC).to receive(:stat).and_return({total_allocated_objects: 1000})
+    it "records the starting allocation count with a single-key GC.stat read" do
+      allow(GC).to receive(:stat).with(:total_allocated_objects).and_return(1000)
 
       listener.start("sql.active_record", event_id, {})
 
       start_map = Thread.current[alloc_start_key]
       expect(start_map).not_to be_nil
       expect(start_map[event_id]).to eq(1000)
+    end
+
+    it "never builds the full GC.stat Hash" do
+      expect(GC).not_to receive(:stat).with(no_args)
+
+      listener.start("sql.active_record", event_id, {})
+      listener.finish("sql.active_record", event_id, {})
     end
 
     it "does not eagerly capture a backtrace on every SQL event" do
@@ -45,7 +52,7 @@ RSpec.describe DeadBro::SqlAllocListener do
 
   describe "#finish" do
     before do
-      allow(GC).to receive(:stat).and_return({total_allocated_objects: 1050})
+      allow(GC).to receive(:stat).with(:total_allocated_objects).and_return(1050)
     end
 
     it "calculates allocation delta and stores it" do
