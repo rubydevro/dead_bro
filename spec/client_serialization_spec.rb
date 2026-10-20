@@ -51,4 +51,22 @@ RSpec.describe DeadBro::Client, "serializing payloads" do
     expect(bodies).to be_empty
     expect(client.serialization_failures).to eq(1)
   end
+
+  it "builds a deferred payload on the worker through #to_payload" do
+    deferred = double("RequestCapture", to_payload: {controller: "ShipmentsController", status: 200})
+
+    client.post_metric(event_name: "process_action.action_controller", payload: deferred)
+
+    expect(JSON.parse(bodies.first)["payload"]).to eq("controller" => "ShipmentsController", "status" => 200)
+  end
+
+  it "drops and counts a deferred payload that fails to build, without raising" do
+    deferred = double("RequestCapture")
+    allow(deferred).to receive(:to_payload).and_raise(NoMethodError)
+
+    expect { client.post_metric(event_name: "test", payload: deferred) }.not_to raise_error
+
+    expect(bodies).to be_empty
+    expect(client.serialization_failures).to eq(1)
+  end
 end

@@ -22,6 +22,7 @@ module DeadBro
     # request/job logs a lot, or when tracking never gets a chance to flush
     # (e.g. code running outside a request lifecycle).
     MAX_LOG_ENTRIES = 500
+    NO_LOGS = [].freeze
 
     def initialize
       @thread_logs_key = :dead_bro_logs
@@ -48,12 +49,15 @@ module DeadBro
       log(:fatal, message)
     end
 
-    # Get all logs for the current thread. If the buffer was capped, append a
-    # synthetic marker entry so downstream consumers know entries were dropped.
+    # Get all logs for the current thread, as a copy: payloads are encoded later,
+    # on the dispatcher, while the thread keeps logging into its buffer. If the
+    # buffer was capped, append a synthetic marker entry so downstream consumers
+    # know entries were dropped.
     def logs
-      entries = Thread.current[@thread_logs_key] || []
+      entries = Thread.current[@thread_logs_key]
+      return NO_LOGS if entries.nil? || entries.empty?
       dropped = Thread.current[@thread_logs_dropped_key] || 0
-      return entries if dropped.zero?
+      return entries.dup if dropped.zero?
 
       entries + [{
         sev: "warn",
@@ -62,10 +66,12 @@ module DeadBro
       }]
     end
 
-    # Clear logs for the current thread
+    # Clear logs for the current thread. The buffer is created by the first
+    # log line (see #log), so a request that logs nothing allocates nothing;
+    # an earlier buffer handed to a payload is left as it was.
     def clear
-      Thread.current[@thread_logs_key] = []
-      Thread.current[@thread_logs_dropped_key] = 0
+      Thread.current[@thread_logs_key] = nil
+      Thread.current[@thread_logs_dropped_key] = nil
     end
 
     private

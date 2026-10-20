@@ -7,6 +7,15 @@ require "timeout"
 
 module DeadBro
   class Client
+    # The job post_metric hands to the dispatcher. One small object is all the
+    # host's request or job thread allocates for a metric; the payload is built
+    # (when deferred), truncated, JSON-encoded and posted by the worker.
+    MetricDelivery = Struct.new(:client, :event_name, :payload, :queued_at) do
+      def call
+        client.__send__(:deliver_metric, event_name, payload, queued_at)
+      end
+    end
+
     def initialize(configuration = DeadBro.configuration)
       @configuration = configuration
       @circuit_breaker = create_circuit_breaker
@@ -14,11 +23,15 @@ module DeadBro
       @serialization_failures = 0
     end
 
-    # Payloads dropped because they couldn't be JSON-encoded even after scrubbing.
+    # Payloads dropped because they couldn't be built or JSON-encoded, even
+    # after scrubbing.
     def serialization_failures
       @failures_mutex.synchronize { @serialization_failures }
     end
 
+    # payload is a Hash, or an object whose #to_payload returns one (see
+    # Subscriber::RequestCapture): that's called on the dispatcher worker, so
+    # a payload can be assembled off the host's thread too.
     def post_metric(event_name:, payload:, force: false)
       return if @configuration.api_key.nil?
       return unless @configuration.enabled
@@ -26,15 +39,10 @@ module DeadBro
       return if !force && !@configuration.should_sample?
       return if circuit_open?
 
-      payload = truncate_payload_for_request(payload)
-      body = {event: event_name, payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
-
-      dispatch_request(
-        url: metrics_endpoint_url,
-        body: body,
-        event_name: event_name,
-        apply_settings: true
-      )
+      # sent_at keeps meaning "when the metric was reported", however long the
+      # job waits in the queue. A Float, so stamping it allocates nothing.
+      queued_at = Process.clock_gettime(Process::CLOCK_REALTIME)
+      DeadBro::Dispatcher.instance.dispatch(MetricDelivery.new(self, event_name, payload, queued_at))
 
       nil
     end
@@ -48,19 +56,8 @@ module DeadBro
       if sync
         # Called from the monitor thread on startup — run inline so settings are
         # applied before the first collection tick.
-        json = serialize(body)
-        return unless json
-
-        uri = URI.parse(metrics_endpoint_url)
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = (uri.scheme == "https")
-        http.open_timeout = @configuration.open_timeout
-        http.read_timeout = @configuration.read_timeout
-        request = Net::HTTP::Post.new(uri.request_uri)
-        request["Content-Type"] = "application/json"
-        request["Authorization"] = "Bearer #{@configuration.api_key}"
-        request.body = json
-        perform_request(http, request, event_name: "heartbeat", apply_settings: true)
+        send_request(url: metrics_endpoint_url, body: body, event_name: "heartbeat",
+          apply_settings: true, settings_header: false)
       else
         dispatch_request(
           url: metrics_endpoint_url,
@@ -128,7 +125,32 @@ module DeadBro
       end
     end
 
+    # Hands the whole send — encoding included — to a dispatcher worker.
     def dispatch_request(url:, body:, event_name:, apply_settings: false)
+      DeadBro::Dispatcher.instance.dispatch do
+        send_request(url: url, body: body, event_name: event_name, apply_settings: apply_settings)
+      end
+    end
+
+    # Runs on a dispatcher worker for metrics: what post_metric used to do on
+    # the host's thread, plus building a deferred payload.
+    def deliver_metric(event_name, payload, queued_at = nil)
+      payload = begin
+        payload.respond_to?(:to_payload) ? payload.to_payload : payload
+      rescue *DeadBro::CONTAINED_ERRORS
+        return record_serialization_failure
+      end
+      return unless payload
+
+      payload = truncate_payload_for_request(payload)
+      sent_at = (queued_at ? Time.at(queued_at) : Time.now).utc.iso8601
+      body = {event: event_name, payload: payload, sent_at: sent_at, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
+
+      send_request(url: metrics_endpoint_url, body: body, event_name: event_name, apply_settings: true)
+    end
+
+    # Encodes body and POSTs it on the calling thread.
+    def send_request(url:, body:, event_name:, apply_settings: false, settings_header: true)
       json = serialize(body)
       return unless json
 
@@ -141,14 +163,12 @@ module DeadBro
       request = Net::HTTP::Post.new(uri.request_uri)
       request["Content-Type"] = "application/json"
       request["Authorization"] = "Bearer #{@configuration.api_key}"
-      if @configuration.settings_received_at
+      if settings_header && @configuration.settings_received_at
         request["X-Settings-Received-At"] = @configuration.settings_received_at.utc.iso8601
       end
       request.body = json
 
-      DeadBro::Dispatcher.instance.dispatch do
-        perform_request(http, request, event_name: event_name, apply_settings: apply_settings)
-      end
+      perform_request(http, request, event_name: event_name, apply_settings: apply_settings)
     end
 
     # Must not raise: for request and job payloads this runs on the host's own

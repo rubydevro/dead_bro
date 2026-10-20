@@ -98,46 +98,34 @@ module DeadBro
       DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
 
       # Start outgoing HTTP accumulation for this request
-      Thread.current[:dead_bro_http_events] = []
+      DeadBro::EventBuffer.start(:dead_bro_http_events)
     rescue *DeadBro::CONTAINED_ERRORS
     end
 
     def stop_tracking
       # Clean up thread-local storage
-      if defined?(DeadBro::SqlSubscriber)
-        Thread.current[:dead_bro_sql_queries]
-        Thread.current[:dead_bro_sql_queries] = nil
-        Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_TXN_EVENTS_KEY] = nil
-      end
+      DeadBro::SqlSubscriber.reset_request_tracking if defined?(DeadBro::SqlSubscriber)
 
-      if defined?(DeadBro::CacheSubscriber)
-        Thread.current[:dead_bro_cache_events]
-        Thread.current[:dead_bro_cache_events] = nil
-      end
-
-      if defined?(DeadBro::RedisSubscriber)
-        Thread.current[:dead_bro_redis_events]
-        Thread.current[:dead_bro_redis_events] = nil
-      end
+      # Event buffers: an empty one is kept for the thread's next request.
+      DeadBro::EventBuffer.stop(DeadBro::CacheSubscriber::THREAD_LOCAL_KEY) if defined?(DeadBro::CacheSubscriber)
+      DeadBro::EventBuffer.stop(DeadBro::RedisSubscriber::THREAD_LOCAL_KEY) if defined?(DeadBro::RedisSubscriber)
+      DeadBro::EventBuffer.stop(:dead_bro_elasticsearch_events)
+      DeadBro::EventBuffer.stop(:dead_bro_http_events)
 
       if defined?(DeadBro::ViewRenderingSubscriber)
         Thread.current[:dead_bro_view_events]
         Thread.current[:dead_bro_view_events] = nil
       end
 
-      if defined?(DeadBro::LightweightMemoryTracker)
-        Thread.current[:dead_bro_lightweight_memory]
-        Thread.current[:dead_bro_lightweight_memory] = nil
-      end
+      # Kept for the thread's next request, emptied of any frame left behind.
+      Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY]&.clear if defined?(DeadBro::LightweightMemoryTracker)
 
-      # Clean up HTTP events, ES events, DB connection tracking, and tracking start time.
+      # Clean up DB connection tracking and tracking start time.
       # The calls below rescue on their own: teardown has to finish, so one
       # failing step must not skip the ones after it.
-      Thread.current[:dead_bro_elasticsearch_events] = nil
-      Thread.current[:dead_bro_http_events] = nil
       Thread.current[:dead_bro_queue_duration_ms] = nil
       begin
-        DeadBro::DbConnectionSubscriber.stop_request_tracking if defined?(DeadBro::DbConnectionSubscriber)
+        DeadBro::DbConnectionSubscriber.reset if defined?(DeadBro::DbConnectionSubscriber)
       rescue *DeadBro::CONTAINED_ERRORS
       end
       Thread.current[DeadBro::GcTracker::THREAD_KEY] = nil if defined?(DeadBro::GcTracker)

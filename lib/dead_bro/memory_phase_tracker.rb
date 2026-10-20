@@ -62,8 +62,13 @@ module DeadBro
       # Never raise from instrumentation install.
     end
 
+    # Tracking is on but nothing was entered yet: the state is only built by
+    # the first phase a request enters, so a request with no SQL/views/ES
+    # allocates nothing here.
+    STARTED = true
+
     def self.start_request_tracking
-      Thread.current[THREAD_KEY] = {buckets: Hash.new(0), stack: []}
+      Thread.current[THREAD_KEY] = STARTED
     end
 
     # Returns { sql: n, view: n, elasticsearch: n } of objects allocated
@@ -72,17 +77,18 @@ module DeadBro
       state = Thread.current[THREAD_KEY]
       return {} unless state.is_a?(Hash)
 
+      # Filtered in place: the state is dropped below, so no copy is needed.
       buckets = state[:buckets]
-      buckets.each_with_object({}) do |(phase, count), result|
-        result[phase] = count if count.positive?
-      end
+      buckets.delete_if { |_phase, count| !count.positive? }
+      buckets
     ensure
       Thread.current[THREAD_KEY] = nil
     end
 
     def self.enter(phase)
       state = Thread.current[THREAD_KEY]
-      return unless state.is_a?(Hash)
+      return unless state
+      state = Thread.current[THREAD_KEY] = {buckets: Hash.new(0), stack: []} if state.equal?(STARTED)
 
       now = allocated_objects
       stack = state[:stack]

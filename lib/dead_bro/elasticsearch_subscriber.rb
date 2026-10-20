@@ -23,13 +23,11 @@ module DeadBro
     end
 
     def self.start_request_tracking
-      Thread.current[THREAD_LOCAL_KEY] = []
+      DeadBro::EventBuffer.start(THREAD_LOCAL_KEY)
     end
 
     def self.stop_request_tracking
-      events = Thread.current[THREAD_LOCAL_KEY]
-      Thread.current[THREAD_LOCAL_KEY] = nil
-      events || []
+      DeadBro::EventBuffer.stop(THREAD_LOCAL_KEY)
     end
 
     def self.should_continue_tracking?

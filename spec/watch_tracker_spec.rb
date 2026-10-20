@@ -155,4 +155,12 @@ RSpec.describe DeadBro::WatchTracker do
     events = described_class.stop_request_tracking
     expect(events.first[:tags]).to eq({"customer_id" => "42", "note" => "hello"})
   end
+
+  it "sets up no buffers when watch is disabled" do
+    DeadBro.configuration.watch_enabled = false
+    described_class.start_request_tracking
+
+    expect(described_class.tracking_active?).to be false
+    expect(described_class.stop_request_tracking).to be_frozen.and be_empty
+  end
 end

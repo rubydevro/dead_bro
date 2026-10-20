@@ -21,7 +21,7 @@ RSpec.describe DeadBro::LightweightMemoryTracker do
       stack = Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY]
       expect(stack).to be_a(Array)
       expect(stack.size).to eq(1)
-      expect(stack.first).to include(:memory_before, :gc_before, :start_time)
+      expect(stack.first).to include(:memory_before, :gc_count_before, :heap_pages_before, :start_time)
     end
 
     it "does nothing when memory_tracking_enabled is false" do
@@ -44,7 +44,7 @@ RSpec.describe DeadBro::LightweightMemoryTracker do
       expect(result).to include(:memory_before, :memory_after, :memory_growth_mb, :duration_seconds)
       expect(result[:memory_before]).to be_a(Numeric)
       expect(result[:memory_after]).to be_a(Numeric)
-      expect(Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY]).to be_nil
+      expect(Thread.current[DeadBro::LightweightMemoryTracker::THREAD_LOCAL_KEY]).to be_empty
     end
   end
 
@@ -65,13 +65,13 @@ RSpec.describe DeadBro::LightweightMemoryTracker do
       outer = tracker.stop_request_tracking
       expect(outer).to include(:memory_before, :memory_after)
       expect(outer[:memory_before]).to eq(outer_before)
-      expect(Thread.current[tracker::THREAD_LOCAL_KEY]).to be_nil
+      expect(Thread.current[tracker::THREAD_LOCAL_KEY]).to be_empty
     end
 
-    it "clears thread local when stack is empty after pop" do
+    it "leaves no frame on the thread after the last pop" do
       tracker.start_request_tracking
       tracker.stop_request_tracking
-      expect(Thread.current[tracker::THREAD_LOCAL_KEY]).to be_nil
+      expect(Thread.current[tracker::THREAD_LOCAL_KEY]).to be_empty
 
       # Second stop returns empty (no frame)
       expect(tracker.stop_request_tracking).to eq({})

@@ -31,6 +31,7 @@ module DeadBro
   autoload :Logger, "dead_bro/logger"
   autoload :WatchTracker, "dead_bro/watch_tracker"
   autoload :Sanitizer, "dead_bro/sanitizer"
+  autoload :EventBuffer, "dead_bro/event_buffer"
   begin
     require "dead_bro/railtie"
   rescue LoadError
@@ -237,7 +238,9 @@ module DeadBro
         end
       }
 
-      payload[:context] = context unless context.empty?
+      # Copied now: the payload is encoded later, on the dispatcher, and the
+      # caller may keep changing what it passed in.
+      payload[:context] = DeadBro::Sanitizer.deep(context) unless context.empty?
 
       client.post_metric(event_name: event_name, payload: payload, force: true)
     rescue StandardError => _e

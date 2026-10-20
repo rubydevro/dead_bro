@@ -6,14 +6,23 @@ module DeadBro
   # handful of requests it served — far too few samples, and reset whenever a
   # thread was recycled. History is now shared across all threads in the
   # process behind a mutex, with a hard cap on the number of retained samples.
+  #
+  # Samples are taken at most once per SAMPLE_INTERVAL_SECONDS, by the
+  # dispatcher worker that sends a request's payload (see
+  # Subscriber.build_payload) — never on the request thread.
+  # Recording one used to run on every request: append, copy up to
+  # MAX_SAMPLES, regress — about 1,500 allocations per request once full.
   class MemoryLeakDetector
-    LEAK_DETECTION_WINDOW = 300 # seconds (5 minutes)
+    SAMPLE_INTERVAL_SECONDS = 60
+    # Wide enough for MIN_SAMPLES_FOR_LEAK_DETECTION one-a-minute samples.
+    LEAK_DETECTION_WINDOW = 3600 # seconds (1 hour)
     MEMORY_GROWTH_THRESHOLD = 50 # MB growth over the window
     MIN_SAMPLES_FOR_LEAK_DETECTION = 10
     MAX_SAMPLES = 500 # hard cap so a long-running process can't grow unbounded
     MAX_LEAK_ALERTS = 10
 
     @mutex = Mutex.new
+    @next_sample_at = nil
     @history = {
       samples: [],
       last_cleanup: Time.now.utc.to_i,
@@ -21,6 +30,18 @@ module DeadBro
     }
 
     class << self
+      # True for at most one caller per SAMPLE_INTERVAL_SECONDS in this
+      # process; that caller records the sample.
+      def sample_due?
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        @mutex.synchronize do
+          return false if @next_sample_at && now < @next_sample_at
+
+          @next_sample_at = now + SAMPLE_INTERVAL_SECONDS
+          true
+        end
+      end
+
       def record_memory_sample(sample_data)
         sample = {
           timestamp: Time.now.utc.to_i,
@@ -81,6 +102,7 @@ module DeadBro
 
       def clear_history
         @mutex.synchronize do
+          @next_sample_at = nil
           @history = {
             samples: [],
             last_cleanup: Time.now.utc.to_i,

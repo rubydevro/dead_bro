@@ -149,4 +149,20 @@ RSpec.describe DeadBro::MemoryLeakDetector do
       expect(result[:sample_count]).to eq(0)
     end
   end
+
+  describe ".sample_due?" do
+    it "says yes to one caller per interval" do
+      expect(described_class.sample_due?).to be true
+      expect(described_class.sample_due?).to be false
+    end
+
+    it "says yes again once the interval has passed" do
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      allow(Process).to receive(:clock_gettime).and_call_original
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC).and_return(now, now + described_class::SAMPLE_INTERVAL_SECONDS + 1)
+
+      expect(described_class.sample_due?).to be true
+      expect(described_class.sample_due?).to be true
+    end
+  end
 end

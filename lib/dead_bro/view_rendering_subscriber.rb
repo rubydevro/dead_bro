@@ -47,20 +47,33 @@ module DeadBro
 
     def self.start_request_tracking
       Thread.current[THREAD_LOCAL_KEY]            = true
-      Thread.current[THREAD_LOCAL_AGGREGATES_KEY] = {}
+      # Created by the first render (see add_view_event).
+      Thread.current[THREAD_LOCAL_AGGREGATES_KEY] = nil
     end
 
     def self.stop_request_tracking
+      sort_aggregates(take_aggregates)
+    end
+
+    # The request's aggregates Hash (identifier => aggregate), removed from the
+    # thread unsorted, for sort_aggregates to order off the request thread.
+    def self.take_aggregates
       Thread.current[THREAD_LOCAL_KEY] = nil
-      aggregates = Thread.current[THREAD_LOCAL_AGGREGATES_KEY] || {}
+      aggregates = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
       Thread.current[THREAD_LOCAL_AGGREGATES_KEY] = nil
+      aggregates
+    end
+
+    # Most-rendered first, then slowest total.
+    def self.sort_aggregates(aggregates)
+      return [] if aggregates.nil? || aggregates.empty?
+
       aggregates.values.sort_by { |a| [-a[:count], -a[:total_duration_ms]] }
     end
 
     def self.add_view_event(view_info)
       return unless Thread.current[THREAD_LOCAL_KEY]
-      aggregates = Thread.current[THREAD_LOCAL_AGGREGATES_KEY]
-      return unless aggregates
+      aggregates = (Thread.current[THREAD_LOCAL_AGGREGATES_KEY] ||= {})
 
       key = view_info[:identifier].to_s
       dur = view_info[:duration_ms].to_f

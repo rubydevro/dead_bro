@@ -39,20 +39,31 @@ module DeadBro
       false
     end
 
+    NO_EVENTS = [].freeze
+
+    # With watch disabled (the default) there is nothing to record, so no
+    # buffers are set up: watch yields straight through.
     def start_request_tracking
-      Thread.current[THREAD_LOCAL_EVENTS_KEY] = []
-      Thread.current[THREAD_LOCAL_ACTIVE_STACK_KEY] = []
+      if enabled?
+        Thread.current[THREAD_LOCAL_EVENTS_KEY] = []
+        Thread.current[THREAD_LOCAL_ACTIVE_STACK_KEY] = []
+      else
+        Thread.current[THREAD_LOCAL_EVENTS_KEY] = nil
+        Thread.current[THREAD_LOCAL_ACTIVE_STACK_KEY] = nil
+      end
     end
 
     def stop_request_tracking
       events = Thread.current[THREAD_LOCAL_EVENTS_KEY]
       Thread.current[THREAD_LOCAL_EVENTS_KEY] = nil
       Thread.current[THREAD_LOCAL_ACTIVE_STACK_KEY] = nil
+      return NO_EVENTS unless events.is_a?(Array) && !events.empty?
+
       # compact drops reserved slots whose block never completed — can't happen
       # for a lexical block, but keeps a nil out of the payload if it ever does.
-      events.is_a?(Array) ? events.compact : []
+      events.compact
     rescue StandardError
-      []
+      NO_EVENTS
     end
 
     def watch(label = nil, **tags)

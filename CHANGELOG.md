@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [0.2.38] - 2026-10-19
+
+### Changed
+- **DeadBro does much less work on the host's request thread, so its per-request time and allocations are significantly lower.** The `process_action.action_controller` listener now only collects: it takes what the request's trackers recorded off their thread-locals and hands it to the dispatcher. Building the payload (sorting the SQL and view aggregates, the view analysis, sanitizing and truncating params, user agent and host), the JSON encoding and setting up the HTTP request all run on the dispatcher worker, as heartbeats and monitor stats now do too. `sent_at` is still the time the metric was reported, not the time the worker sent it.
+- **Leak detection no longer runs on every request.** Each request used to append a sample and run a regression over the stored samples on the request thread. The dispatcher worker now records a sample periodically, and the detection window is wider to match. `DeadBro::MemoryHelpers` and `MemoryLeakDetector.get_memory_analysis` work as before.
+- **GC counters are read with single-key `GC.stat(:key)` calls,** which allocate nothing: one snapshot when the request starts and one when it ends, shared by `gc_pressure`, `gc_stats` and the memory metrics. Before, the full `GC.stat` Hash was built several times per request and for every query.
+- Request setup no longer allocates for what a request doesn't use: the log buffer, `DeadBro.watch` spans (unless `watch_enabled`), per-phase allocation state and the per-request SQL frames are created by their first use, and cache/Redis/Elasticsearch/HTTP event buffers that stayed empty are reused by the next request on the thread.
+- Looking up the signed-in user no longer copies the Rack env, or raises and rescues a `NoMethodError` on every request where nobody is signed in. The user id reported is the same.
+
 ## [0.2.34] - 2026-09-29
 
 ### Fixed

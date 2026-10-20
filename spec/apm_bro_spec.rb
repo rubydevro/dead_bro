@@ -662,6 +662,33 @@ RSpec.describe DeadBro do
       expect(logger.logs.length).to eq(0)
     end
 
+    it "leaves the logs an earlier request handed to its payload as they were" do
+      logger.info("Shipment 7 dispatched")
+      handed_over = logger.logs
+
+      logger.clear
+      logger.info("Shipment 8 dispatched")
+
+      expect(handed_over.map { |l| l[:msg] }).to eq(["Shipment 7 dispatched"])
+    end
+
+    it "allocates no buffer until something is logged" do
+      logger.clear
+
+      expect(logger.logs).to be_frozen.and be_empty
+    end
+
+    it "hands out a copy, so lines logged later don't reach a payload that took the logs" do
+      logger.clear
+      logger.info("Card for order 7 declined")
+      handed_over = logger.logs
+
+      logger.info("Order 7 marked unpaid")
+
+      expect(handed_over.map { |l| l[:msg] }).to eq(["Card for order 7 declined"])
+      expect(logger.logs.size).to eq(2)
+    end
+
     it "includes timestamps in logs" do
       logger.info("Test")
       log = logger.logs.first
@@ -985,6 +1012,15 @@ RSpec.describe DeadBro do
     it "includes context keyword args under :context" do
       DeadBro.track(StandardError.new("fail"), user_id: 42, plan: "pro")
       expect(captured_calls.first[:payload][:context]).to eq({user_id: 42, plan: "pro"})
+    end
+
+    it "copies the context, so a change the app makes after tracking doesn't reach the payload" do
+      order = {id: 7, status: "pending"}
+      DeadBro.track(StandardError.new("card declined"), order: order)
+
+      order[:status] = "paid"
+
+      expect(captured_calls.first[:payload][:context]).to eq({order: {id: 7, status: "pending"}})
     end
 
     it "omits :context key when no context is given" do
