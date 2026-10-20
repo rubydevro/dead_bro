@@ -26,6 +26,7 @@ module DeadBro
   autoload :MemoryHelpers, "dead_bro/memory_helpers"
   autoload :JobSubscriber, "dead_bro/job_subscriber"
   autoload :JobSqlTrackingMiddleware, "dead_bro/job_sql_tracking_middleware"
+  autoload :SidekiqServerMiddleware, "dead_bro/sidekiq_server_middleware"
   autoload :Monitor, "dead_bro/monitor"
   autoload :MemoryDetails, "dead_bro/memory_details"
   autoload :Logger, "dead_bro/logger"

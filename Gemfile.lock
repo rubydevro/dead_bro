@@ -1,11 +1,14 @@
 PATH
   remote: .
   specs:
-    dead_bro (0.2.34)
+    dead_bro (0.2.35)
 
 GEM
   remote: https://rubygems.org/
   specs:
+    activejob (7.1.6)
+      activesupport (= 7.1.6)
+      globalid (>= 0.3.6)
     activesupport (7.1.6)
       base64
       benchmark (>= 0.3)
@@ -27,6 +30,8 @@ GEM
     diff-lcs (1.6.2)
     docile (1.4.1)
     drb (2.2.3)
+    globalid (1.4.0)
+      activesupport (>= 6.1)
     i18n (1.14.8)
       concurrent-ruby (~> 1.0)
     logger (1.7.0)
@@ -62,6 +67,7 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
+  activejob (~> 7.1.0)
   activesupport (~> 7.1.0)
   dead_bro!
   minitest (< 5.25)

@@ -18,5 +18,8 @@ gem "simplecov", "~> 0.22", require: false
 gem "activesupport", "~> 7.1.0", require: false
 gem "minitest", "< 5.25"
 
+# Runs real retry_on / discard_on jobs (spec/job_subscriber_active_job_spec.rb)
+gem "activejob", "~> 7.1.0", require: false
+
 # For testing ErrorMiddleware, which requires rack (always loaded in a Rails app)
 gem "rack", require: false

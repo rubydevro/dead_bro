@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+## [0.2.35] - 2026-10-20
+
+### Fixed
+- **A job run whose exception `retry_on` or `discard_on` handled is now reported as failed, not completed.** ActiveJob rescues those exceptions inside `perform_now`, so `perform.active_job` finishes without one and every handled attempt used to arrive as a success (the known limitation noted under 0.2.32). The gem now subscribes to `enqueue_retry.active_job`, `retry_stopped.active_job` and `discard.active_job`, which fire inside that rescue, and reports the run with `status: "failed"`, the exception (class, message, backtrace, fingerprint, cause chain) and a new `error_handling` field: `"retried"`, `"retries_exhausted"` or `"discarded"`. Like every failure it ships regardless of sampling. Failure counts can therefore exceed Sidekiq's own "failed", which only sees exceptions that escape the job. A custom `rescue_from` handler instruments nothing and still reports `"completed"`.
+- **Jobs that include `Sidekiq::Job` directly are now tracked.** They never go through ActiveJob, so no run of theirs, successful or failed, was reported. A Sidekiq server middleware (installed automatically in the Sidekiq process) now reports each run as event `perform.sidekiq` with the same payload as an ActiveJob run: SQL, dependencies, memory, queue wait from `enqueued_at` (float seconds or Sidekiq 8's integer milliseconds), and the exception when the run raised — which is re-raised untouched. ActiveJob jobs that Sidekiq runs are skipped by the middleware and reported by `perform.active_job` as before, so no run is reported twice.
+- **A job still running when Sidekiq shuts down is no longer reported as failed.** When its shutdown timeout runs out, Sidekiq raises `Sidekiq::Shutdown` into the jobs still running and pushes them back onto the queue, to run again after the restart. `perform.active_job` (and the new Sidekiq middleware) reported each of those as a failed run with a `Sidekiq::Shutdown` error, on every deploy that caught a long job. A run whose exception is `Sidekiq::Shutdown`, or was raised while handling one, is now not reported at all; its rerun is.
+- Job arguments were all dropped (sent as `[]`) in apps without ActiveRecord loaded: the argument sanitizer's `ActiveRecord::Base` branch raised `NameError`.
+
 ## [0.2.34] - 2026-09-29
 
 ### Fixed
