@@ -19,6 +19,7 @@ module DeadBro
                        duration_ms: ((finished - started) * 1000.0).round(2),
                        rendered_at: Time.now.utc.to_i,
                        start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
 
       ActiveSupport::Notifications.subscribe(RENDER_PARTIAL_EVENT) do |_name, started, finished, _uid, data|
@@ -28,6 +29,7 @@ module DeadBro
                        cache_key: data[:cache_key],
                        rendered_at: Time.now.utc.to_i,
                        start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
 
       ActiveSupport::Notifications.subscribe(RENDER_COLLECTION_EVENT) do |_name, started, finished, _uid, data|
@@ -38,6 +40,7 @@ module DeadBro
                        collection_cached_count: (data[:cached_count] || 0).to_i,
                        rendered_at: Time.now.utc.to_i,
                        start_offset_ms: tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil)
+      rescue *DeadBro::CONTAINED_ERRORS
       end
     rescue
     end

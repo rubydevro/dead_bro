@@ -52,8 +52,10 @@ module DeadBro
         finished: Time.now,
         exception: exception
       )
-    rescue
-      # Never raise into the job, nor mask its own exception
+    rescue *DeadBro::CONTAINED_ERRORS
+      # Never raise into the job, nor mask its own exception. report_job drains
+      # its own failures; this covers reading the job before report_job is reached.
+      DeadBro::JobSubscriber.drain_job_tracking
     end
   end
 end

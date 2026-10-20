@@ -28,7 +28,7 @@ module DeadBro
       ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, data|
         handled_errors.delete(data[:job].job_id) if data[:job]
         start_gc_tracking
-      rescue
+      rescue *DeadBro::CONTAINED_ERRORS
       end
 
       # A job whose exception retry_on/discard_on handled returns normally:
@@ -47,7 +47,7 @@ module DeadBro
           errors = handled_errors
           errors.clear if errors.size >= MAX_HANDLED_ERRORS
           errors[job.job_id] = {error: error, handling: handling}
-        rescue
+        rescue *DeadBro::CONTAINED_ERRORS
         end
       end
 
@@ -75,8 +75,10 @@ module DeadBro
           exception: data[:exception_object] || handled&.dig(:error),
           error_handling: handled&.dig(:handling)
         )
-      rescue
-        # Never raise into the job
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Never raise into the job. report_job drains its own failures; this
+        # covers reading the job before report_job is reached.
+        drain_job_tracking
       end
     rescue
       # Never raise from instrumentation install
@@ -89,7 +91,7 @@ module DeadBro
     def self.start_gc_tracking
       DeadBro::GcTracker.start_request_tracking if defined?(DeadBro::GcTracker)
       DeadBro::ArObjectTracker.start_request_tracking if defined?(DeadBro::ArObjectTracker)
-    rescue
+    rescue *DeadBro::CONTAINED_ERRORS
     end
 
     # Everything perform_start.active_job arms, for job runners that don't emit it
@@ -243,8 +245,8 @@ module DeadBro
 
       if has_error
         payload[:exception_class] = exception.class.name
-        payload[:message] = exception.message.to_s[0, 1000]
-        payload[:backtrace] = Array(exception.backtrace).first(50)
+        payload[:message] = DeadBro::Sanitizer.string(exception.message.to_s[0, 1000])
+        payload[:backtrace] = Array(exception.backtrace).first(50).map { |line| DeadBro::Sanitizer.string(line) }
         payload[:fingerprint] = DeadBro::Subscriber.compute_error_fingerprint(exception)
         payload[:cause_chain] = DeadBro::Subscriber.build_cause_chain(exception)
         payload[:error] = true
@@ -255,8 +257,11 @@ module DeadBro
       # completions the sampling decision above already accounted for any
       # per-job-type override, so client#post_metric must not re-roll it globally.
       client.post_metric(event_name: event_name, payload: payload, force: true)
-    rescue
-      # Never raise into the job
+    rescue *DeadBro::CONTAINED_ERRORS
+      # Anything raised here would fail the host's job (see
+      # DeadBro::CONTAINED_ERRORS) — drop this job's metrics instead. Jobs have
+      # no Rack middleware to reset thread-locals afterwards, so drain here.
+      drain_job_tracking
     end
 
     # Release job-side thread-local tracking state when we've decided not to
@@ -351,17 +356,19 @@ module DeadBro
     def self.safe_arguments(arguments)
       return [] unless arguments.is_a?(Array)
 
-      # Limit and sanitize job arguments
+      # Limit and sanitize job arguments. Strings are scrubbed to valid UTF-8 here
+      # so one binary argument doesn't send the payload down the client's slow retry path.
       arguments.first(10).map do |arg|
         case arg
         when String
-          (arg.length > 200) ? arg[0, 200] + "..." : arg
+          str = DeadBro::Sanitizer.string(arg)
+          (str.length > 200) ? str[0, 200] + "..." : str
         when Hash
           # Filter sensitive keys and limit size
           filtered = arg.reject { |k, _| %w[password token secret key].include?(k.to_s) }
-          (filtered.keys.size > 20) ? filtered.first(20).to_h : filtered
+          DeadBro::Sanitizer.deep((filtered.keys.size > 20) ? filtered.first(20).to_h : filtered)
         when Array
-          arg.first(5)
+          DeadBro::Sanitizer.deep(arg.first(5))
         # A bare `when ActiveRecord::Base` raises NameError without ActiveRecord
         # loaded, and the rescue below would then drop every argument.
         when ->(a) { defined?(ActiveRecord::Base) && a.is_a?(ActiveRecord::Base) }
@@ -373,7 +380,8 @@ module DeadBro
           end}"
         else
           # Convert to string and truncate, but avoid object inspection
-          (arg.to_s.length > 200) ? arg.to_s[0, 200] + "..." : arg.to_s
+          str = DeadBro::Sanitizer.string(arg)
+          (str.length > 200) ? str[0, 200] + "..." : str
         end
       end
     rescue

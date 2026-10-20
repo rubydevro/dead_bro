@@ -51,7 +51,7 @@ module DeadBro
       end
 
       DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
-    rescue
+    rescue *DeadBro::CONTAINED_ERRORS
       # Never raise into the job
     end
   end

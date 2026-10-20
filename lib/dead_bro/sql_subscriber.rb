@@ -271,6 +271,7 @@ module DeadBro
         if should_continue_tracking?(current, MAX_TRACKED_QUERIES)
           current << query_info
         end
+      rescue *DeadBro::CONTAINED_ERRORS
       end
     end
 
@@ -379,6 +380,9 @@ module DeadBro
       # are big UPDATE/INSERT with long literal blobs; don't burn regex time on
       # those when we're going to truncate anyway.
       sql = sql[0..SANITIZE_MAX_LENGTH] + "..." if sql.length > SANITIZE_MAX_LENGTH
+      # The regexes below raise on invalid UTF-8 (e.g. a binary literal inlined
+      # by an adapter without prepared statements).
+      sql = DeadBro::Sanitizer.string(sql)
 
       # Only scan for sensitive KV pairs if one of the keywords is actually
       # present — saves two regex passes on the vast majority of queries.
@@ -419,6 +423,10 @@ module DeadBro
       return false if stripped.match?(/\AWITH\b/i) && stripped.match?(EXPLAIN_DML_KEYWORD_RE)
 
       true
+    rescue
+      # e.g. invalid UTF-8 in the SQL, which strip and match? raise on — when in
+      # doubt, don't run anything against the customer's database.
+      false
     end
 
     def self.start_explain_background(sql, connection_id, query_info, binds = nil)
@@ -494,7 +502,7 @@ module DeadBro
       timestamp = Time.now.utc
       log_entry = {
         sev: severity.to_s,
-        msg: message.to_s,
+        msg: DeadBro::Sanitizer.string(message),
         time: timestamp.iso8601(3)
       }
 
@@ -778,7 +786,7 @@ module DeadBro
       # dominating CPU on N+1-heavy requests (100s of full Thread#backtrace
       # allocations). The main subscriber now captures a trimmed backtrace
       # lazily — and only when a query exceeds slow_query_threshold_ms.
-    rescue
+    rescue *DeadBro::CONTAINED_ERRORS
     end
 
     def finish(name, id, payload)
@@ -796,7 +804,7 @@ module DeadBro
       delta = end_count - start_count
       results = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_RESULTS_KEY] ||= {})
       results[id] = delta
-    rescue
+    rescue *DeadBro::CONTAINED_ERRORS
     end
   end
 end

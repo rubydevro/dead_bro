@@ -1,13 +1,24 @@
 ## [Unreleased]
 
-## [0.2.34] - 2026-10-01
+## [0.2.35] - 2026-10-20
 
 ### Fixed
 - **A job run whose exception `retry_on` or `discard_on` handled is now reported as failed, not completed.** ActiveJob rescues those exceptions inside `perform_now`, so `perform.active_job` finishes without one and every handled attempt used to arrive as a success (the known limitation noted under 0.2.32). The gem now subscribes to `enqueue_retry.active_job`, `retry_stopped.active_job` and `discard.active_job`, which fire inside that rescue, and reports the run with `status: "failed"`, the exception (class, message, backtrace, fingerprint, cause chain) and a new `error_handling` field: `"retried"`, `"retries_exhausted"` or `"discarded"`. Like every failure it ships regardless of sampling. Failure counts can therefore exceed Sidekiq's own "failed", which only sees exceptions that escape the job. A custom `rescue_from` handler instruments nothing and still reports `"completed"`.
 - **Jobs that include `Sidekiq::Job` directly are now tracked.** They never go through ActiveJob, so no run of theirs, successful or failed, was reported. A Sidekiq server middleware (installed automatically in the Sidekiq process) now reports each run as event `perform.sidekiq` with the same payload as an ActiveJob run: SQL, dependencies, memory, queue wait from `enqueued_at` (float seconds or Sidekiq 8's integer milliseconds), and the exception when the run raised — which is re-raised untouched. ActiveJob jobs that Sidekiq runs are skipped by the middleware and reported by `perform.active_job` as before, so no run is reported twice.
 - **A job still running when Sidekiq shuts down is no longer reported as failed.** When its shutdown timeout runs out, Sidekiq raises `Sidekiq::Shutdown` into the jobs still running and pushes them back onto the queue, to run again after the restart. `perform.active_job` (and the new Sidekiq middleware) reported each of those as a failed run with a `Sidekiq::Shutdown` error, on every deploy that caught a long job. A run whose exception is `Sidekiq::Shutdown`, or was raised while handling one, is now not reported at all; its rerun is.
 - Job arguments were all dropped (sent as `[]`) in apps without ActiveRecord loaded: the argument sanitizer's `ActiveRecord::Base` branch raised `NameError`.
-- An exception raised while building a job's payload could escape the `perform.active_job` listener into the job; it is now rescued.
+
+## [0.2.34] - 2026-09-29
+
+### Fixed
+- **A request carrying bytes that aren't valid UTF-8 (e.g. a bot's user agent with a stray `\xA1`) got a 500 from the host app and wasn't recorded.** Rack hands header values over as raw bytes, and the subscriber only stripped NUL bytes, so `JSON.dump` raised `JSON::GeneratorError` inside the `process_action.action_controller` listener. Rails re-raises a listener's exception into the request. `ErrorMiddleware` then reported that error with the same raw bytes, failed the same way and swallowed it. The user agent, path, host, params, exception messages and backtraces (and every `ErrorMiddleware` field) are now converted to valid UTF-8 before sending, with invalid bytes replaced by U+FFFD, and the request is recorded with the scrubbed value.
+- **A DeadBro listener or middleware can no longer raise into the host app.** Every `ActiveSupport::Notifications` callback (requests, jobs, SQL, cache, Redis, Elasticsearch, views, AR instantiation), the outgoing HTTP and Redis hooks, and `SqlTrackingMiddleware`'s setup and teardown now rescue the same set of errors and drop the metric instead. Teardown also finishes when one of its steps fails, so allocation tracing is still stopped. Before, a failing background job could have its own exception replaced by DeadBro's, and a job whose payload couldn't be built left its tracking state behind for the next job on the same worker thread. This is deliberately not `rescue Exception`: `Rack::Timeout`, `Sidekiq::Shutdown`, `Interrupt` and a plain `Timeout.timeout(sec)` that fire while DeadBro code runs still reach the host. `Timeout.timeout(sec, SomeStandardError)` can still be swallowed if it fires mid-callback, as it can by any `rescue => e`.
+- **SQL containing invalid UTF-8 (e.g. a binary literal inlined by an adapter that doesn't use prepared statements) failed the host's query.** The SQL sanitizer's regexes raised `ArgumentError`; the SQL is now scrubbed first and the query is tracked.
+- **A param key that isn't valid UTF-8 made DeadBro drop the request's params.** The sensitive-key check raised on it; keys are now scrubbed first, so the params are kept and still redacted. (Only reachable from a JSON body in an app with no `filter_parameters`; otherwise Rails fails the request on such a key first.)
+
+### Changed
+- Cache keys, Redis keys and commands, job arguments and log messages are scrubbed where they're captured, so a bad byte in one of them (e.g. a cache key built from the user agent) no longer costs the request a full copy of its payload.
+- If a payload still can't be JSON-encoded because some other string isn't valid UTF-8, the client retries once with every string in the payload scrubbed rather than losing it. Payloads that can't be serialized even then are dropped and counted in `DeadBro.client.serialization_failures`.
 
 ## [0.2.32] - 2026-09-22
 
