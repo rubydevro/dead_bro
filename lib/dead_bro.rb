@@ -238,7 +238,9 @@ module DeadBro
         end
       }
 
-      payload[:context] = context unless context.empty?
+      # Copied now: the payload is encoded later, on the dispatcher, and the
+      # caller may keep changing what it passed in.
+      payload[:context] = DeadBro::Sanitizer.deep(context) unless context.empty?
 
       client.post_metric(event_name: event_name, payload: payload, force: true)
     rescue StandardError => _e

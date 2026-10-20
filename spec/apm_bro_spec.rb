@@ -1014,6 +1014,15 @@ RSpec.describe DeadBro do
       expect(captured_calls.first[:payload][:context]).to eq({user_id: 42, plan: "pro"})
     end
 
+    it "copies the context, so a change the app makes after tracking doesn't reach the payload" do
+      order = {id: 7, status: "pending"}
+      DeadBro.track(StandardError.new("card declined"), order: order)
+
+      order[:status] = "paid"
+
+      expect(captured_calls.first[:payload][:context]).to eq({order: {id: 7, status: "pending"}})
+    end
+
     it "omits :context key when no context is given" do
       DeadBro.track(StandardError.new("fail"))
       expect(captured_calls.first[:payload]).not_to have_key(:context)
