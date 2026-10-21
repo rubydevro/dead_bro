@@ -769,6 +769,16 @@ RSpec.describe DeadBro do
       expect(config.enabled).to be false
     end
 
+    it "takes report_routing_errors from the dashboard, off until it arrives" do
+      expect(config.report_routing_errors).to be false
+
+      config.apply_remote_settings("report_routing_errors" => true)
+      expect(config.report_routing_errors).to be true
+
+      config.apply_remote_settings("report_routing_errors" => false)
+      expect(config.report_routing_errors).to be false
+    end
+
     it "never enables EXPLAIN capture remotely — local opt-in required" do
       expect(config.explain_active?).to be false
 

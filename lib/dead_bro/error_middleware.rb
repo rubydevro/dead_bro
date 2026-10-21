@@ -12,14 +12,17 @@ module DeadBro
     end
 
     def call(env)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       @app.call(env)
     rescue Exception => exception # rubocop:disable Lint/RescueException
       begin
-        payload = build_payload(exception, env)
-        # Use the error class name as the event name
-        event_name = exception.class.name.to_s
-        event_name = EVENT_NAME if event_name.empty?
-        @client.post_metric(event_name: event_name, payload: payload, force: true)
+        if report?(exception, env)
+          payload = build_payload(exception, env, started)
+          # Use the error class name as the event name
+          event_name = exception.class.name.to_s
+          event_name = EVENT_NAME if event_name.empty?
+          @client.post_metric(event_name: event_name, payload: payload, force: true)
+        end
       rescue *DeadBro::CONTAINED_ERRORS
         # Never let APM reporting interfere with the host app — in particular,
         # never replace the host's exception with one of ours.
@@ -29,7 +32,23 @@ module DeadBro
 
     private
 
-    def build_payload(exception, env)
+    # Only exceptions that never reached a controller action are this
+    # middleware's: the request subscriber reports the others, with the
+    # request's details, and flags the env. A request that matches no route
+    # raises ActionController::RoutingError here, mostly from bots probing for
+    # paths like /wp-login.php, so those are sent only when the app opts in.
+    def report?(exception, env)
+      return false if env[DeadBro::Subscriber::REPORTED_ENV_KEY]
+      return !!DeadBro.configuration.report_routing_errors if routing_error?(exception)
+
+      true
+    end
+
+    def routing_error?(exception)
+      defined?(::ActionController::RoutingError) && exception.is_a?(::ActionController::RoutingError)
+    end
+
+    def build_payload(exception, env, started)
       req = rack_request(env)
 
       payload = {
@@ -39,6 +58,12 @@ module DeadBro
         fingerprint: DeadBro::Subscriber.compute_error_fingerprint(exception),
         cause_chain: DeadBro::Subscriber.build_cause_chain(exception),
         occurred_at: Time.now.utc.to_i,
+        # What the backend needs to store the report as a request (e.g. a
+        # request that matched no route, as a 404).
+        status: response_status(exception),
+        duration_ms: elapsed_ms(started),
+        host: DeadBro.safe_hostname,
+        request_host: DeadBro::Subscriber.safe_request_host({env: env}),
         rack:
           {
             method: req&.request_method,
@@ -65,6 +90,22 @@ module DeadBro
 
     def rack_request(env)
       ::Rack::Request.new(env)
+    rescue
+      nil
+    end
+
+    # The status Rails answers the exception with: 404 for a RoutingError, else
+    # 500 unless the app maps the class elsewhere (action_dispatch.rescue_responses).
+    def response_status(exception)
+      return 500 unless defined?(::ActionDispatch::ExceptionWrapper)
+
+      ::ActionDispatch::ExceptionWrapper.status_code_for_exception(exception.class.name)
+    rescue
+      500
+    end
+
+    def elapsed_ms(started)
+      ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000.0).round(2)
     rescue
       nil
     end

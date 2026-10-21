@@ -61,6 +61,8 @@ For **Amazon ECS**, add one of these variables in your task definition from Code
 
 Use the DeadBro UI to turn features on or off, set sample rates, define controller/job inclusions and exclusions, tune slow-query EXPLAIN, enable queue and system metrics, and adjust related limits. After you deploy the initializer above, those choices take effect when the gem receives them from the API (typically on the next successful metric or heartbeat response).
 
+Requests that match no route (`ActionController::RoutingError`, nearly always bots probing for paths like `/wp-login.php`) aren't sent unless "Track requests that match no route" is on in the app's settings (`report_routing_errors`, off by default). DeadBro then stores them as 404 requests under `Routing#no_route`, not as errors.
+
 ### Optional local flags
 
 You can still set `config.enabled` in Ruby if you need to force the integration off in a given environment before any remote settings arrive; otherwise the dashboard can control `enabled` like other remote settings.

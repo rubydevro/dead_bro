@@ -9,6 +9,10 @@ module DeadBro
 
     def self.subscribe!(client: Client.new)
       ActiveSupport::Notifications.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
+        # An exception the action raised is this listener's to report (or to
+        # drop with an excluded request) — ErrorMiddleware must not send it again.
+        mark_reported(data)
+
         # When disabled remotely, fire a heartbeat at most once per minute so the gem
         # can detect when tracking has been re-enabled, then skip all tracking.
         unless DeadBro.configuration.enabled
@@ -277,6 +281,23 @@ module DeadBro
       DeadBro::WatchTracker.stop_request_tracking if defined?(DeadBro::WatchTracker)
     rescue
       # Best effort — draining must never raise from the notifications callback.
+    end
+
+    # Set in the Rack env when the controller action raised. The exception then
+    # passes ErrorMiddleware on its way out (in production DebugExceptions
+    # re-raises it), which skips flagged requests so one error is one POST.
+    REPORTED_ENV_KEY = "dead_bro.reported"
+
+    def self.mark_reported(data)
+      return unless data[:exception] || data[:exception_object]
+
+      # The payload carries the request since Rails 6.1. Not data[:headers]:
+      # ActionDispatch::Http::Headers#env is a copy, the flag would be lost.
+      request = data[:request]
+      env = request.env if request.respond_to?(:env)
+      env[REPORTED_ENV_KEY] = true if env.is_a?(Hash)
+    rescue
+      # Best effort — without the flag ErrorMiddleware reports the exception too.
     end
 
     def self.safe_path(data)
