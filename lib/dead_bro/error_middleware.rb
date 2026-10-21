@@ -35,8 +35,8 @@ module DeadBro
     # Only exceptions that never reached a controller action are this
     # middleware's: the request subscriber reports the others, with the
     # request's details, and flags the env. A request that matches no route
-    # raises ActionController::RoutingError here, mostly from bots probing for
-    # paths like /wp-login.php, so those are sent only when the app opts in.
+    # raises ActionController::RoutingError here; those are sent only when the
+    # app's report_routing_errors setting is on.
     def report?(exception, env)
       return false if env[DeadBro::Subscriber::REPORTED_ENV_KEY]
       return !!DeadBro.configuration.report_routing_errors if routing_error?(exception)
@@ -58,8 +58,7 @@ module DeadBro
         fingerprint: DeadBro::Subscriber.compute_error_fingerprint(exception),
         cause_chain: DeadBro::Subscriber.build_cause_chain(exception),
         occurred_at: Time.now.utc.to_i,
-        # What the backend needs to store the report as a request (e.g. a
-        # request that matched no route, as a 404).
+        # What the backend needs to store the report as a request.
         status: response_status(exception),
         duration_ms: elapsed_ms(started),
         host: DeadBro.safe_hostname,

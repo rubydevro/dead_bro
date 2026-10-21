@@ -117,8 +117,8 @@ module DeadBro
       @enable_process_stats = false
       @enable_system_stats = false
       # A request that matches no route raises ActionController::RoutingError in
-      # the middleware stack, not in a controller, and is nearly always a bot
-      # probing for paths. ErrorMiddleware sends those only when this is on.
+      # the middleware stack, not in a controller. ErrorMiddleware sends those
+      # only when this is on.
       @report_routing_errors = false
 
       @settings_received_at = nil

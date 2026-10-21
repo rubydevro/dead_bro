@@ -8,8 +8,8 @@ require "dead_bro/error_middleware"
 # One error, one POST. The request subscriber reports an exception raised in a
 # controller action; in production DebugExceptions then re-raises it past
 # ErrorMiddleware, which used to send the same exception a second time.
-# Requests that match no route (ActionController::RoutingError, nearly always
-# bots) aren't sent unless the app opts in.
+# Requests that match no route (ActionController::RoutingError) aren't sent
+# unless the app's report_routing_errors setting is on.
 RSpec.describe DeadBro::ErrorMiddleware do
   let(:config) { DeadBro.configuration }
   let(:posted) { [] }
@@ -107,7 +107,7 @@ RSpec.describe DeadBro::ErrorMiddleware do
     let(:routing_error) { stub_const("ActionController::RoutingError", Class.new(StandardError)) }
 
     context "from a request that matches no route" do
-      let(:not_found) { routing_error.new('No route matches [GET] "/wp-login.php"') }
+      let(:not_found) { routing_error.new('No route matches [GET] "/orders/42/receipt"') }
       let(:middleware) { described_class.new(->(_env) { raise not_found }, client) }
 
       before do
@@ -125,7 +125,7 @@ RSpec.describe DeadBro::ErrorMiddleware do
         expect(posted).to be_empty
       end
 
-      it "sends it, as a 404, once the app's settings turn report_routing_errors on" do
+      it "sends it, with status 404, once the app's settings turn report_routing_errors on" do
         config.apply_remote_settings("report_routing_errors" => true)
 
         expect { middleware.call(env) }.to raise_error(not_found)
