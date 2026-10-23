@@ -141,8 +141,8 @@ By default, DeadBro uses **lightweight memory tracking** that has minimal perfor
 
 Every request and job sample reports what DeadBro itself cost it:
 
-- `agent_overhead_ms` - Time DeadBro's own code ran on the request's or job's thread: `SqlTrackingMiddleware`'s setup, the notification listeners (SQL, views, cache, Active Record, Redis, Elasticsearch), the hooks around outgoing HTTP and Redis calls, and building the sample. A GC pause that starts while DeadBro's code runs is not included.
-- `agent_allocated_objects` - Objects that code allocated.
+- `agent_overhead_ms` - CPU time DeadBro's own code used on the request's or job's thread: `SqlTrackingMiddleware`'s setup, the notification listeners (SQL, views, cache, Active Record, Redis, Elasticsearch), the hooks around outgoing HTTP and Redis calls, and building the sample. Garbage collection that runs on the thread while DeadBro's code runs is included; time the thread spends waiting (on I/O, or while another thread runs) is not.
+- `agent_allocated_objects` - Objects that code allocated. The count comes from Ruby's process-wide allocation counter, so a stretch of DeadBro code during which the thread was off the CPU, and another thread may have allocated, is left out of it.
 
 The reading is taken just before the sample is handed to the client, so the middleware's cleanup after the response and the client's work on the payload (truncating it, JSON encoding, preparing the HTTP request) are not included. The POST itself runs on a background thread.
 

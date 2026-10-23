@@ -361,14 +361,17 @@ module DeadBro
       return unless pending && !pending.empty?
 
       start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      pending.each do |thread|
-        remaining_time = timeout_seconds - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time)
-        break if remaining_time <= 0
+      # The EXPLAIN threads run while this one waits; see OverheadTracker.isolate.
+      DeadBro::OverheadTracker.isolate do
+        pending.each do |thread|
+          remaining_time = timeout_seconds - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time)
+          break if remaining_time <= 0
 
-        begin
-          thread.join(remaining_time)
-        rescue => e
-          DeadBro.logger.debug("Error waiting for EXPLAIN plan: #{e.message}")
+          begin
+            thread.join(remaining_time)
+          rescue => e
+            DeadBro.logger.debug("Error waiting for EXPLAIN plan: #{e.message}")
+          end
         end
       end
     end

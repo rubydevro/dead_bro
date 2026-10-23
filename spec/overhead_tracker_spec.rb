@@ -55,7 +55,7 @@ RSpec.describe DeadBro::OverheadTracker do
       expect(payload[:agent_allocated_objects]).to be_between(100, 130)
     end
 
-    it "leaves a GC pause that starts inside a window out of its time", if: GC.respond_to?(:total_time) do
+    it "counts garbage collection that runs inside a window", if: GC.respond_to?(:total_time) do
       described_class.start_request_tracking
       gc_before = GC.total_time
       overhead = described_class.enter
@@ -64,13 +64,61 @@ RSpec.describe DeadBro::OverheadTracker do
       gc_ms = (GC.total_time - gc_before) / 1_000_000.0
 
       expect(gc_ms).to be > 0
-      expect(described_class.stamp({})[:agent_overhead_ms]).to be < gc_ms / 2
+      expect(described_class.stamp({})[:agent_overhead_ms]).to be > gc_ms / 2
+    end
+
+    it "leaves out another thread's time and objects, and the objects of the window it ran in",
+      if: DeadBro::OverheadTracker::Meter::CPU_CLOCK == Process::CLOCK_THREAD_CPUTIME_ID do
+      described_class.start_request_tracking
+      other_ms = nil
+      overhead = described_class.enter
+      allocate_strings(100)
+      Thread.new do
+        started = Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID, :nanosecond)
+        allocate_strings(200_000)
+        other_ms = (Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID, :nanosecond) - started) / 1_000_000.0
+      end.join
+      described_class.leave(overhead)
+      measured_window(100)
+
+      payload = described_class.stamp({})
+
+      expect(payload[:agent_allocated_objects]).to be_between(100, 130)
+      expect(payload[:agent_overhead_ms]).to be < other_ms / 2
     end
 
     it "does nothing on a thread that isn't tracking a request or job" do
       expect(described_class.enter).to be_nil
       expect { described_class.leave(nil) }.not_to raise_error
       expect(described_class.stamp({controller: "InvoicesController"})).to eq(controller: "InvoicesController")
+    end
+  end
+
+  describe ".isolate" do
+    it "costs the open window only the isolated stretch's objects when another thread runs in it",
+      if: DeadBro::OverheadTracker::Meter::CPU_CLOCK == Process::CLOCK_THREAD_CPUTIME_ID do
+      described_class.start_request_tracking
+      overhead = described_class.enter
+      allocate_strings(100)
+      result = described_class.isolate do
+        Thread.new { allocate_strings(200_000) }.join
+        :joined
+      end
+      allocate_strings(100)
+      described_class.leave(overhead)
+
+      expect(result).to eq(:joined)
+      expect(described_class.stamp({})[:agent_allocated_objects]).to be_between(200, 240)
+    end
+
+    it "just runs the block when no window is open" do
+      expect(described_class.isolate { :rss }).to eq(:rss)
+
+      described_class.start_request_tracking
+      expect(described_class.isolate { :rss }).to eq(:rss)
+      overhead = described_class.enter
+      expect(overhead).to be_a(described_class::Meter)
+      described_class.leave(overhead)
     end
   end
 

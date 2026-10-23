@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module DeadBro
-  # What DeadBro itself costs the request or job it tracks: how long its own
-  # code runs on that thread and how many objects it allocates there. Each
+  # What DeadBro itself costs the request or job it tracks: the CPU time its
+  # own code uses on that thread and how many objects it allocates there. Each
   # piece of DeadBro code on the thread — SqlTrackingMiddleware's setup, the
   # notification listeners, the hooks around HTTP and Redis calls, and the
   # listener that builds the sample — runs inside a window on the thread's
@@ -15,15 +15,33 @@ module DeadBro
   # call the listeners; the connection-pool checkout timer (two clock reads);
   # and DeadBro.watch's bookkeeping around the app's block.
   #
-  # A GC pause that starts inside a window is left out of its time; the
-  # objects DeadBro allocates are counted instead. They are read from the
-  # process-wide counter, so another thread's objects are counted too when it
-  # runs while DeadBro code waits on I/O (e.g. for a pending EXPLAIN).
+  # Time is the thread's CPU time, so a garbage collection that runs on the
+  # thread inside a window counts, and time the thread spends off the CPU —
+  # waiting on I/O, or for the GVL while another thread runs — doesn't.
+  # Allocations come from the process-wide counter, which also counts other
+  # threads' objects: a window in which the thread was off the CPU for longer
+  # than clock noise explains (another thread ran meanwhile) adds its time but
+  # not its objects. DeadBro code that gives up the GVL — the /proc read for
+  # RSS, the wait for pending EXPLAINs — runs as a window of its own
+  # (isolate), so only that stretch's objects are left out.
   module OverheadTracker
     THREAD_KEY = :dead_bro_overhead
 
     class Meter
-      GC_TIME_AVAILABLE = GC.respond_to?(:total_time)
+      # The thread's CPU clock where the platform has one. Without it, windows
+      # are timed by the wall clock and can't tell that another thread ran.
+      CPU_CLOCK = begin
+        Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID)
+        Process::CLOCK_THREAD_CPUTIME_ID
+      rescue NameError, SystemCallError
+        Process::CLOCK_MONOTONIC
+      end
+
+      # How much longer than its CPU time a window may take on the wall clock
+      # before it counts as having been off the CPU: this much, plus a quarter
+      # of its CPU time, for noise that grows with the window (e.g. a virtual
+      # machine's steal time).
+      OFF_CPU_TOLERANCE_NS = 20_000
 
       # The meter this one interrupted: a job performed inline (perform_now)
       # inside a request or another job is measured on its own, and the outer
@@ -32,49 +50,50 @@ module DeadBro
 
       def initialize(outer = nil)
         @outer = outer
-        @nanoseconds = 0
+        @cpu_nanoseconds = 0
         @allocations = 0
         @opened_at = nil
+        @opened_cpu = 0
         @opened_allocations = 0
-        @opened_gc_time = 0
+      end
+
+      def open?
+        !@opened_at.nil?
       end
 
       # Nil when a window is already open: that one counts this code too.
+      #
+      # The clocks are read outside the allocation counter (here and in
+      # close), so whatever takes the thread off the CPU between the two
+      # counter reads also shows in the wall-clock time.
       def open
         return if @opened_at
 
-        @opened_allocations = GC.stat(:total_allocated_objects)
-        @opened_gc_time = gc_time
         @opened_at = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+        @opened_cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond)
+        @opened_allocations = GC.stat(:total_allocated_objects)
         self
       end
 
       def close
-        @nanoseconds += window_nanoseconds
-        @allocations += GC.stat(:total_allocated_objects) - @opened_allocations
+        allocations = GC.stat(:total_allocated_objects) - @opened_allocations
+        cpu = Process.clock_gettime(CPU_CLOCK, :nanosecond) - @opened_cpu
+        off_cpu = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - @opened_at - cpu
+
+        @cpu_nanoseconds += cpu
+        @allocations += allocations if off_cpu <= OFF_CPU_TOLERANCE_NS + (cpu >> 2)
         @opened_at = nil
       end
 
-      # The totals so far, the caller's open window included.
+      # The totals so far, the caller's open window included: it is closed
+      # here and the rest of it goes on as a new window.
       def stamp(payload)
-        nanoseconds = @nanoseconds
-        allocations = @allocations
         if @opened_at
-          nanoseconds += window_nanoseconds
-          allocations += GC.stat(:total_allocated_objects) - @opened_allocations
+          close
+          open
         end
-        payload[:agent_overhead_ms] = (nanoseconds / 1_000_000.0).round(3)
-        payload[:agent_allocated_objects] = allocations
-      end
-
-      private
-
-      def window_nanoseconds
-        Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - @opened_at - (gc_time - @opened_gc_time)
-      end
-
-      def gc_time
-        GC_TIME_AVAILABLE ? GC.total_time : 0
+        payload[:agent_overhead_ms] = (@cpu_nanoseconds / 1_000_000.0).round(3)
+        payload[:agent_allocated_objects] = @allocations
       end
     end
 
@@ -95,6 +114,24 @@ module DeadBro
 
     def self.leave(meter)
       meter&.close
+    end
+
+    # Runs DeadBro code that can give up the GVL (reading /proc, waiting for
+    # another thread) as a window of its own inside the open one, so that a
+    # thread that runs meanwhile costs this stretch its object count, not the
+    # whole window around it. Just runs the block when no window is open.
+    def self.isolate
+      meter = Thread.current[THREAD_KEY]
+      return yield unless meter&.open?
+
+      begin
+        meter.close
+        meter.open
+        yield
+      ensure
+        meter.close
+        meter.open
+      end
     end
 
     # Adds agent_overhead_ms and agent_allocated_objects to a sample's
