@@ -7,6 +7,10 @@ module DeadBro
       ActiveSupport::Notifications.subscribe("perform_start.active_job") do |name, started, finished, _unique_id, data|
         next if DeadBro.configuration.skip_tracking?
 
+        # First, so this setup counts toward DeadBro's own cost for the job.
+        DeadBro::OverheadTracker.start_request_tracking
+        overhead = DeadBro::OverheadTracker.enter
+
         # Clear logs for this job
         DeadBro.logger.clear
 
@@ -43,6 +47,8 @@ module DeadBro
 
         DeadBro::WatchTracker.start_request_tracking if defined?(DeadBro::WatchTracker)
       rescue *DeadBro::CONTAINED_ERRORS
+      ensure
+        DeadBro::OverheadTracker.leave(overhead)
       end
     rescue
       # Never raise from instrumentation install

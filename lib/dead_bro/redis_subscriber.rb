@@ -76,6 +76,7 @@ module DeadBro
             finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             duration_ms = ((finish_time - start_time) * 1000.0).round(2)
 
+            overhead = DeadBro::OverheadTracker.enter
             begin
               cmd_info = RedisSubscriber.extract_command(command: command)
               tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -95,6 +96,8 @@ module DeadBro
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
             rescue *DeadBro::CONTAINED_ERRORS
+            ensure
+              DeadBro::OverheadTracker.leave(overhead)
             end
           end
         end
@@ -111,6 +114,7 @@ module DeadBro
             finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             duration_ms = ((finish_time - start_time) * 1000.0).round(2)
 
+            overhead = DeadBro::OverheadTracker.enter
             begin
               commands_count = pipeline.commands&.length || 0
               tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -127,6 +131,8 @@ module DeadBro
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
             rescue *DeadBro::CONTAINED_ERRORS
+            ensure
+              DeadBro::OverheadTracker.leave(overhead)
             end
           end
         end
@@ -143,6 +149,7 @@ module DeadBro
             finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             duration_ms = ((finish_time - start_time) * 1000.0).round(2)
 
+            overhead = DeadBro::OverheadTracker.enter
             begin
               commands_count = multi.commands&.length || 0
               tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -159,6 +166,8 @@ module DeadBro
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
             rescue *DeadBro::CONTAINED_ERRORS
+            ensure
+              DeadBro::OverheadTracker.leave(overhead)
             end
           end
         end
@@ -174,7 +183,7 @@ module DeadBro
       # This covers cases where other libraries emit redis.* events
       if defined?(ActiveSupport::Notifications)
         begin
-          ActiveSupport::Notifications.subscribe(/\Aredis\..+\z/) do |name, started, finished, _unique_id, data|
+          DeadBro::OverheadTracker.subscribe(/\Aredis\..+\z/) do |name, started, finished, _unique_id, data|
             next unless Thread.current[THREAD_LOCAL_KEY]
             duration_ms = ((finished - started) * 1000.0).round(2)
             tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]

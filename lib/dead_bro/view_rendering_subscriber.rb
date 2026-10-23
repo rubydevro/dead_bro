@@ -13,7 +13,7 @@ module DeadBro
     MAX_TRACKED_EVENTS = 500
 
     def self.subscribe!(client: Client.new)
-      ActiveSupport::Notifications.subscribe(RENDER_TEMPLATE_EVENT) do |_name, started, finished, _uid, data|
+      DeadBro::OverheadTracker.subscribe(RENDER_TEMPLATE_EVENT) do |_name, started, finished, _uid, data|
         tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "template", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),
@@ -22,7 +22,7 @@ module DeadBro
       rescue *DeadBro::CONTAINED_ERRORS
       end
 
-      ActiveSupport::Notifications.subscribe(RENDER_PARTIAL_EVENT) do |_name, started, finished, _uid, data|
+      DeadBro::OverheadTracker.subscribe(RENDER_PARTIAL_EVENT) do |_name, started, finished, _uid, data|
         tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "partial", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),
@@ -32,7 +32,7 @@ module DeadBro
       rescue *DeadBro::CONTAINED_ERRORS
       end
 
-      ActiveSupport::Notifications.subscribe(RENDER_COLLECTION_EVENT) do |_name, started, finished, _uid, data|
+      DeadBro::OverheadTracker.subscribe(RENDER_COLLECTION_EVENT) do |_name, started, finished, _uid, data|
         tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
         add_view_event(type: "collection", identifier: safe_identifier(data[:identifier]),
                        duration_ms: ((finished - started) * 1000.0).round(2),

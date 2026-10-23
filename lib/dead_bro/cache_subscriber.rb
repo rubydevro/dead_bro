@@ -20,7 +20,7 @@ module DeadBro
 
     def self.subscribe!
       EVENTS.each do |event_name|
-        ActiveSupport::Notifications.subscribe(event_name) do |name, started, finished, _unique_id, data|
+        DeadBro::OverheadTracker.subscribe(event_name) do |name, started, finished, _unique_id, data|
           next unless Thread.current[THREAD_LOCAL_KEY]
 
           duration_ms = ((finished - started) * 1000.0).round(2)

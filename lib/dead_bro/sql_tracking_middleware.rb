@@ -21,6 +21,10 @@ module DeadBro
     # the host would get a 500 (or, from teardown, have its own response or
     # exception replaced by ours). Tracking is best-effort, the request is not.
     def start_tracking(env)
+      # First, so this setup counts toward DeadBro's own cost for the request.
+      DeadBro::OverheadTracker.start_request_tracking
+      overhead = DeadBro::OverheadTracker.enter
+
       # Capture rack entry time before any setup so middleware overhead is accurately measured.
       rack_entry = Time.now
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = rack_entry
@@ -100,6 +104,8 @@ module DeadBro
       # Start outgoing HTTP accumulation for this request
       Thread.current[:dead_bro_http_events] = []
     rescue *DeadBro::CONTAINED_ERRORS
+    ensure
+      DeadBro::OverheadTracker.leave(overhead)
     end
 
     def stop_tracking
@@ -158,6 +164,7 @@ module DeadBro
     ensure
       Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
+      DeadBro::OverheadTracker.stop_request_tracking
     end
 
     def parse_queue_start(env, rack_entry)

@@ -8,7 +8,7 @@ module DeadBro
     EVENT_NAME = "process_action.action_controller"
 
     def self.subscribe!(client: Client.new)
-      ActiveSupport::Notifications.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
+      DeadBro::OverheadTracker.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
         # An exception the action raised is this listener's to report (or to
         # drop with an excluded request) — ErrorMiddleware must not send it again.
         mark_reported(data)
@@ -219,6 +219,7 @@ module DeadBro
             )
 
             event_name = (exception_class || exception_obj&.class&.name || "exception").to_s
+            DeadBro::OverheadTracker.stamp(error_payload)
             client.post_metric(event_name: event_name, payload: error_payload, force: true)
           rescue
           ensure
@@ -243,6 +244,7 @@ module DeadBro
           user_agent: safe_user_agent(data),
           user_id: extract_user_id(data)
         )
+        DeadBro::OverheadTracker.stamp(payload)
         # force: true — the sampling decision (global or per-request-type) was
         # already made above; client#post_metric must not re-roll it with the
         # global-only rate, which would silently override a per-type sample rate.

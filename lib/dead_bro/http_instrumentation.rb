@@ -33,6 +33,7 @@ module DeadBro
           ensure
             finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             duration_ms = ((finish_time - start_time) * 1000.0).round(2)
+            overhead = DeadBro::OverheadTracker.enter
             begin
               uri = begin
                 URI.parse(req.uri ? req.uri.to_s : "http://#{@address}:#{@port}#{req.path}")
@@ -80,6 +81,8 @@ module DeadBro
                 end
               end
             rescue *DeadBro::CONTAINED_ERRORS
+            ensure
+              DeadBro::OverheadTracker.leave(overhead)
             end
           end
         end
@@ -99,6 +102,7 @@ module DeadBro
           ensure
             finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             duration_ms = ((finish_time - start_time) * 1000.0).round(2)
+            overhead = DeadBro::OverheadTracker.enter
             begin
               req_url = if respond_to?(:url)
                 url
@@ -121,6 +125,8 @@ module DeadBro
                 end
               end
             rescue *DeadBro::CONTAINED_ERRORS
+            ensure
+              DeadBro::OverheadTracker.leave(overhead)
             end
           end
         end
@@ -143,6 +149,7 @@ module DeadBro
             ensure
               finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
               duration_ms = ((finish_time - start_time) * 1000.0).round(2)
+              overhead = DeadBro::OverheadTracker.enter
               begin
                 url = env.url
                 host = url.host.to_s
@@ -178,6 +185,8 @@ module DeadBro
                   end
                 end
               rescue *DeadBro::CONTAINED_ERRORS
+              ensure
+                DeadBro::OverheadTracker.leave(overhead)
               end
             end
           end
