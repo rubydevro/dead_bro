@@ -38,10 +38,13 @@ module DeadBro
     end
 
     def self.read_rss_bytes
-      if File.readable?("/proc/self/status")
-        read_rss_from_proc_status
-      else
-        read_rss_from_ps
+      # The read gives up the GVL; see OverheadTracker.isolate.
+      DeadBro::OverheadTracker.isolate do
+        if File.readable?("/proc/self/status")
+          read_rss_from_proc_status
+        else
+          read_rss_from_ps
+        end
       end
     rescue
       0

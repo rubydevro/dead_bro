@@ -137,6 +137,15 @@ By default, DeadBro uses **lightweight memory tracking** that has minimal perfor
 - **Lightweight mode** (`memory_tracking_enabled`, ~0.1ms overhead per request): RSS before/after, GC pressure, the retained-vs-transient signals (`heap_live_slots_growth`, `malloc_increase_bytes`), and per-phase allocation attribution (`allocation_phases` — which of `sql`/`view`/`elasticsearch` allocated the request's objects).
 - **Allocation tracking** (`allocation_tracking_enabled`, ~2-5ms overhead per request — only enable when needed): adds by-bytes object-type breakdown (`memsize_by_type`) and allocation-source attribution (`allocation_sources`, `file:line`) using the `objspace` extension, which is loaded only on this path. Use `allocation_sample_rate` to spread that cost across a fraction of traffic.
 
+## DeadBro's Own Overhead
+
+Every request and job sample reports what DeadBro itself cost it:
+
+- `agent_overhead_ms` - CPU time DeadBro's own code used on the request's or job's thread: `SqlTrackingMiddleware`'s setup, the notification listeners (SQL, views, cache, Active Record, Redis, Elasticsearch), the hooks around outgoing HTTP and Redis calls, and building the sample. Garbage collection that runs on the thread while DeadBro's code runs is included; time the thread spends waiting (on I/O, or while another thread runs) is not.
+- `agent_allocated_objects` - Objects that code allocated. The count comes from Ruby's process-wide allocation counter, so a stretch of DeadBro code during which the thread was off the CPU, and another thread may have allocated, is left out of it.
+
+The reading is taken just before the sample is handed to the client, so the middleware's cleanup after the response and the client's work on the payload (truncating it, JSON encoding, preparing the HTTP request) are not included. The POST itself runs on a background thread.
+
 ## Job Tracking
 
 DeadBro automatically tracks ActiveJob background jobs when ActiveJob is available. Each job execution is tracked with:

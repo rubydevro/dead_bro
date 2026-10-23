@@ -12,7 +12,7 @@ module DeadBro
 
     def self.subscribe!(client: Client.new)
       # Snap GC state before the job runs so stop_request_tracking gets a valid diff
-      ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, _data|
+      DeadBro::OverheadTracker.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, _data|
         DeadBro::GcTracker.start_request_tracking if defined?(DeadBro::GcTracker)
         DeadBro::ArObjectTracker.start_request_tracking if defined?(DeadBro::ArObjectTracker)
       rescue *DeadBro::CONTAINED_ERRORS
@@ -40,7 +40,7 @@ module DeadBro
       # unhandled raise (attempts exhausted, no block given) is visible here.
       # Covering handled attempts would need separate instrumentation on
       # enqueue_retry.active_job / retry_stopped.active_job / discard.active_job.
-      ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
+      DeadBro::OverheadTracker.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
         begin
           if DeadBro.configuration.skip_tracking?
             drain_job_tracking
@@ -163,10 +163,12 @@ module DeadBro
           payload[:error] = true
         end
 
+        DeadBro::OverheadTracker.stamp(payload)
         # force: true — errors always ship, bypassing sampling by design; for
         # completions the sampling decision above already accounted for any
         # per-job-type override, so client#post_metric must not re-roll it globally.
         client.post_metric(event_name: name, payload: payload, force: true)
+        DeadBro::OverheadTracker.stop_request_tracking
       rescue *DeadBro::CONTAINED_ERRORS
         # Anything raised here would fail the host's job (see
         # DeadBro::CONTAINED_ERRORS) — drop this job's metrics instead. Jobs have
@@ -196,6 +198,7 @@ module DeadBro
         DeadBro::MemoryTrackingSubscriber.stop_request_tracking
       end
       DeadBro::WatchTracker.stop_request_tracking if defined?(DeadBro::WatchTracker)
+      DeadBro::OverheadTracker.stop_request_tracking
     rescue
       # Best effort
     end

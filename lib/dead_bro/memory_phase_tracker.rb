@@ -84,6 +84,7 @@ module DeadBro
       state = Thread.current[THREAD_KEY]
       return unless state.is_a?(Hash)
 
+      overhead = DeadBro::OverheadTracker.enter
       now = allocated_objects
       stack = state[:stack]
       if (parent = stack.last)
@@ -93,12 +94,15 @@ module DeadBro
       stack << {phase: phase, checkpoint: now}
     rescue *DeadBro::CONTAINED_ERRORS
       # Best-effort only.
+    ensure
+      DeadBro::OverheadTracker.leave(overhead)
     end
 
     def self.leave(phase)
       state = Thread.current[THREAD_KEY]
       return unless state.is_a?(Hash)
 
+      overhead = DeadBro::OverheadTracker.enter
       stack = state[:stack]
       frame = stack.pop
       return unless frame
@@ -112,6 +116,8 @@ module DeadBro
       end
     rescue *DeadBro::CONTAINED_ERRORS
       # Best-effort only.
+    ensure
+      DeadBro::OverheadTracker.leave(overhead)
     end
 
     # Single-key GC.stat returns just the Integer (no hash allocation), so this

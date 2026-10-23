@@ -112,7 +112,7 @@ module DeadBro
         return unless defined?(::ActiveSupport::Notifications)
 
         %w[request.elasticsearch request.elastic_transport].each do |event_name|
-          ::ActiveSupport::Notifications.subscribe(event_name) do |_name, started, finished, _id, payload|
+          DeadBro::OverheadTracker.subscribe(event_name) do |_name, started, finished, _id, payload|
             events = Thread.current[THREAD_LOCAL_KEY]
             next unless events
             next unless should_continue_tracking?

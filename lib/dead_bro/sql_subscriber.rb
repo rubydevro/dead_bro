@@ -174,7 +174,7 @@ module DeadBro
         end
       end
 
-      ActiveSupport::Notifications.subscribe(SQL_EVENT_NAME) do |name, started, finished, _unique_id, data|
+      DeadBro::OverheadTracker.subscribe(SQL_EVENT_NAME) do |name, started, finished, _unique_id, data|
         next if data[:name] == "SCHEMA" || data[:name] == "CACHE"
 
         if TXN_CONTROL_NAMES.include?(data[:name])
@@ -361,14 +361,17 @@ module DeadBro
       return unless pending && !pending.empty?
 
       start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      pending.each do |thread|
-        remaining_time = timeout_seconds - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time)
-        break if remaining_time <= 0
+      # The EXPLAIN threads run while this one waits; see OverheadTracker.isolate.
+      DeadBro::OverheadTracker.isolate do
+        pending.each do |thread|
+          remaining_time = timeout_seconds - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time)
+          break if remaining_time <= 0
 
-        begin
-          thread.join(remaining_time)
-        rescue => e
-          DeadBro.logger.debug("Error waiting for EXPLAIN plan: #{e.message}")
+          begin
+            thread.join(remaining_time)
+          rescue => e
+            DeadBro.logger.debug("Error waiting for EXPLAIN plan: #{e.message}")
+          end
         end
       end
     end
@@ -780,6 +783,7 @@ module DeadBro
   # Listener that records GC allocation deltas per SQL event id
   class SqlAllocListener
     def start(name, id, payload)
+      overhead = DeadBro::OverheadTracker.enter
       map = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY] ||= {})
       map[id] = GC.stat[:total_allocated_objects] if defined?(GC) && GC.respond_to?(:stat)
       # Backtraces used to be captured here for every SQL event, which was
@@ -787,9 +791,12 @@ module DeadBro
       # allocations). The main subscriber now captures a trimmed backtrace
       # lazily — and only when a query exceeds slow_query_threshold_ms.
     rescue *DeadBro::CONTAINED_ERRORS
+    ensure
+      DeadBro::OverheadTracker.leave(overhead)
     end
 
     def finish(name, id, payload)
+      overhead = DeadBro::OverheadTracker.enter
       start_map = Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_START_KEY]
       return unless start_map && start_map.key?(id)
 
@@ -805,6 +812,8 @@ module DeadBro
       results = (Thread.current[DeadBro::SqlSubscriber::THREAD_LOCAL_ALLOC_RESULTS_KEY] ||= {})
       results[id] = delta
     rescue *DeadBro::CONTAINED_ERRORS
+    ensure
+      DeadBro::OverheadTracker.leave(overhead)
     end
   end
 end

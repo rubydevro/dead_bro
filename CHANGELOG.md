@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.2.39] - 2026-10-22
+
+### Added
+- **Each request and job sample now reports what DeadBro itself cost it.** `agent_overhead_ms` is the CPU time DeadBro's own code used on the request's or job's thread — `SqlTrackingMiddleware`'s setup, its notification listeners, the hooks around HTTP and Redis calls, and building the sample — and `agent_allocated_objects` is the number of objects that code allocated. The reading is taken just before the sample is handed to the client, so the middleware's cleanup after the response and the client's own work on the payload aren't in it. Garbage collection that runs while DeadBro's code runs is included in the time; time the thread spends waiting, including while other threads run, is not, and a stretch of DeadBro code during which another thread may have run doesn't add to the object count. The DeadBro dashboard shows both on each sample and their averages on the endpoint page.
+
 ## [0.2.35] - 2026-10-21
 
 ### Fixed

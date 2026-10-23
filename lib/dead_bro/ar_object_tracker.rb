@@ -9,7 +9,7 @@ module DeadBro
     def self.subscribe!
       return if @subscribed
       @subscribed = true
-      ActiveSupport::Notifications.subscribe("instantiation.active_record") do |_name, _started, _finished, _id, data|
+      DeadBro::OverheadTracker.subscribe("instantiation.active_record") do |_name, _started, _finished, _id, data|
         count = Thread.current[THREAD_KEY]
         next unless count
         Thread.current[THREAD_KEY] = count + (data[:record_count] || 1).to_i
