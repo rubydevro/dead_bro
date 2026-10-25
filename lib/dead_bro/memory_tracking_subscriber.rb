@@ -39,6 +39,7 @@ module DeadBro
               allocations: allocations,
               allocated_bytes: allocated_bytes
             )
+          rescue *DeadBro::CONTAINED_ERRORS
           end
         rescue
           # Allocation tracking might not be available in all Ruby versions

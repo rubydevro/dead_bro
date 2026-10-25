@@ -9,6 +9,10 @@ module DeadBro
 
     def self.subscribe!(client: Client.new)
       ActiveSupport::Notifications.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
+        # An exception the action raised is this listener's to report (or to
+        # drop with an excluded request) — ErrorMiddleware must not send it again.
+        mark_reported(data)
+
         # When disabled remotely, fire a heartbeat at most once per minute so the gem
         # can detect when tracking has been re-enabled, then skip all tracking.
         unless DeadBro.configuration.enabled
@@ -192,7 +196,7 @@ module DeadBro
           begin
             exception_class, exception_message = data[:exception] if data[:exception]
             exception_obj = data[:exception_object]
-            backtrace = Array(exception_obj&.backtrace).first(50)
+            backtrace = Array(exception_obj&.backtrace).first(50).map { |line| sanitize_string(line) }
 
             error_payload = detail_fields.merge(
               controller: data[:controller],
@@ -210,7 +214,7 @@ module DeadBro
               user_agent: safe_user_agent(data),
               user_id: extract_user_id(data),
               exception_class: exception_class || exception_obj&.class&.name,
-              message: (exception_message || exception_obj&.message).to_s[0, 1000],
+              message: sanitize_string((exception_message || exception_obj&.message).to_s[0, 1000]),
               backtrace: backtrace,
               fingerprint: compute_error_fingerprint(exception_obj),
               cause_chain: build_cause_chain(exception_obj),
@@ -246,6 +250,10 @@ module DeadBro
         # already made above; client#post_metric must not re-roll it with the
         # global-only rate, which would silently override a per-type sample rate.
         client.post_metric(event_name: name, payload: payload, force: true)
+      rescue *DeadBro::CONTAINED_ERRORS
+        # Anything raised here would fail the host's request (see
+        # DeadBro::CONTAINED_ERRORS) — drop this request's metrics instead.
+        drain_request_tracking
       end
     end
 
@@ -276,6 +284,23 @@ module DeadBro
       DeadBro::WatchTracker.stop_request_tracking if defined?(DeadBro::WatchTracker)
     rescue
       # Best effort — draining must never raise from the notifications callback.
+    end
+
+    # Set in the Rack env when the controller action raised. The exception then
+    # passes ErrorMiddleware on its way out (in production DebugExceptions
+    # re-raises it), which skips flagged requests so one error is one POST.
+    REPORTED_ENV_KEY = "dead_bro.reported"
+
+    def self.mark_reported(data)
+      return unless data[:exception] || data[:exception_object]
+
+      # The payload carries the request since Rails 6.1. Not data[:headers]:
+      # ActionDispatch::Http::Headers#env is a copy, the flag would be lost.
+      request = data[:request]
+      env = request.env if request.respond_to?(:env)
+      env[REPORTED_ENV_KEY] = true if env.is_a?(Hash)
+    rescue
+      # Best effort — without the flag ErrorMiddleware reports the exception too.
     end
 
     def self.safe_path(data)
@@ -312,7 +337,7 @@ module DeadBro
     end
 
     def self.sanitize_string(str)
-      str.to_s.gsub("\x00", "")
+      DeadBro::Sanitizer.string(str)
     end
 
     # Matched against a key segment (delimited by start/end, underscore, dash, or
@@ -339,6 +364,9 @@ module DeadBro
       when Hash
         entries = value.to_a[0, max_hash_keys]
         entries.each_with_object({}) do |(k, v), memo|
+          # Scrubbed first: the sensitive-key regex raises on a key that isn't
+          # valid UTF-8, which would drop the whole params hash.
+          k = sanitize_string(k) if k.is_a?(String)
           memo[k] = sensitive_key?(k) ? "[FILTERED]" : truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys)
         end
       else
@@ -501,7 +529,7 @@ module DeadBro
     end
 
     def self.normalize_error_message(msg)
-      msg.to_s
+      sanitize_string(msg)
         .gsub(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i, "UUID")
         .gsub(/\b\d+\b/, "N")
         .gsub(/"[^"]*"/, '"?"')
@@ -511,7 +539,7 @@ module DeadBro
 
     def self.compute_error_fingerprint(exception)
       return nil unless exception
-      top_frame = Array(exception.backtrace).first.to_s.gsub(/:\d+:in /, ":N:in ")
+      top_frame = sanitize_string(Array(exception.backtrace).first).gsub(/:\d+:in /, ":N:in ")
       input = "#{exception.class.name}|#{normalize_error_message(exception.message)}|#{top_frame}"
       Digest::SHA256.hexdigest(input)[0, 16]
     rescue
@@ -526,8 +554,8 @@ module DeadBro
       while cause && depth < 5
         chain << {
           exception_class: cause.class.name,
-          message: cause.message.to_s[0, 500],
-          backtrace_top: Array(cause.backtrace).first(3)
+          message: sanitize_string(cause.message.to_s[0, 500]),
+          backtrace_top: Array(cause.backtrace).first(3).map { |line| sanitize_string(line) }
         }
         cause = cause.cause
         depth += 1

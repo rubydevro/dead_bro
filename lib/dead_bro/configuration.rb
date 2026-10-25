@@ -23,7 +23,7 @@ module DeadBro
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
       :sample_rate, :slow_query_threshold_ms, :watch_enabled,
       :monitor_enabled, :enable_db_stats, :enable_process_stats, :enable_system_stats,
-      :max_sql_queries_to_send, :max_logs_to_send
+      :max_sql_queries_to_send, :max_logs_to_send, :report_routing_errors
 
     # Readers for exclusion lists. Writers are defined below so we can compile
     # and cache the regex form once, instead of rebuilding it per request.
@@ -73,7 +73,7 @@ module DeadBro
       explain_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       watch_enabled excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
-      sample_rates_by_type
+      sample_rates_by_type report_routing_errors
     ].freeze
 
     def initialize
@@ -116,6 +116,10 @@ module DeadBro
       @enable_db_stats = false
       @enable_process_stats = false
       @enable_system_stats = false
+      # A request that matches no route raises ActionController::RoutingError in
+      # the middleware stack, not in a controller. ErrorMiddleware sends those
+      # only when this is on.
+      @report_routing_errors = false
 
       @settings_received_at = nil
       @skip_until = nil
@@ -190,7 +194,8 @@ module DeadBro
             # (explain_enabled) stays untouched; see #explain_active?
             @remote_explain_enabled = !!value
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "watch_enabled",
-               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats"
+               "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats",
+               "report_routing_errors"
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))

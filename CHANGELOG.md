@@ -1,12 +1,31 @@
 ## [Unreleased]
 
-## [0.2.34] - 2026-09-30
-
 ### Added
 - **`gc_pressure` now says whether the window's GC had finished.** `gc_state_at_end` is the GC's phase when a request or job window closes — `"none"`, `"marking"` or `"sweeping"`, from `GC.latest_gc_info(:state)` — sent with the other memory-tracking fields. Ruby marks and sweeps in steps between allocations, so a GC counted in the window is often still running when it closes, and until it finishes `heap_live_slots_growth` still counts garbage it hasn't freed. The dashboard uses it so a sample measured mid-GC isn't flagged as a possible leak. It's a single-key read; no hash is built.
 
 ### Fixed
 - **The in-process leak detector's `object_count` was always 0.** `gc_stats` never read `heap_live_slots`, so every `MemoryLeakDetector` sample recorded `object_count: 0` and the `object_stats` / `memory_efficiency` figures from `DeadBro::MemoryHelpers.analyze_memory` were meaningless. `gc_stats` now includes `heap_live_slots` — in request and job payloads alike — and the request's leak sample and payload share one `GC.stat` read. `average_memory_per_object_kb` is now actually in KB; it divided RSS in MB by the object count.
+
+## [0.2.35] - 2026-10-21
+
+### Fixed
+- **In production, every exception raised in a controller action was sent to DeadBro twice.** The request subscriber reports it with the request's details; the exception then reached `ErrorMiddleware` on its way out (with `consider_all_requests_local` off, `ActionDispatch::DebugExceptions` re-raises it instead of rendering the debug page), which sent it again. The dashboard already counted each error once, so the second request was wasted work for the app. The subscriber now flags the request in the Rack env (`env["dead_bro.reported"]`) and `ErrorMiddleware` skips flagged requests, so one error is one request to DeadBro. `ErrorMiddleware` still reports exceptions that never reach a controller action. An exception raised in an excluded controller is no longer sent at all.
+
+### Changed
+- **Requests that match no route are no longer sent unless the app's settings ask for them.** Rails raises `ActionController::RoutingError` for them in the middleware stack, not in a controller, and `ErrorMiddleware` sent each one to DeadBro, which discarded it. Turn on "Track requests that match no route" in the app's settings in DeadBro (the `report_routing_errors` setting) to have them sent and stored as `ActionController::RoutingError` errors. A `RoutingError` raised by a controller action is still reported, once, by the request subscriber.
+- `ErrorMiddleware` reports now carry the response status, the time the request took, the machine's host name and the request's host, so DeadBro can store them as requests.
+
+## [0.2.34] - 2026-09-29
+
+### Fixed
+- **A request carrying bytes that aren't valid UTF-8 (e.g. a bot's user agent with a stray `\xA1`) got a 500 from the host app and wasn't recorded.** Rack hands header values over as raw bytes, and the subscriber only stripped NUL bytes, so `JSON.dump` raised `JSON::GeneratorError` inside the `process_action.action_controller` listener. Rails re-raises a listener's exception into the request. `ErrorMiddleware` then reported that error with the same raw bytes, failed the same way and swallowed it. The user agent, path, host, params, exception messages and backtraces (and every `ErrorMiddleware` field) are now converted to valid UTF-8 before sending, with invalid bytes replaced by U+FFFD, and the request is recorded with the scrubbed value.
+- **A DeadBro listener or middleware can no longer raise into the host app.** Every `ActiveSupport::Notifications` callback (requests, jobs, SQL, cache, Redis, Elasticsearch, views, AR instantiation), the outgoing HTTP and Redis hooks, and `SqlTrackingMiddleware`'s setup and teardown now rescue the same set of errors and drop the metric instead. Teardown also finishes when one of its steps fails, so allocation tracing is still stopped. Before, a failing background job could have its own exception replaced by DeadBro's, and a job whose payload couldn't be built left its tracking state behind for the next job on the same worker thread. This is deliberately not `rescue Exception`: `Rack::Timeout`, `Sidekiq::Shutdown`, `Interrupt` and a plain `Timeout.timeout(sec)` that fire while DeadBro code runs still reach the host. `Timeout.timeout(sec, SomeStandardError)` can still be swallowed if it fires mid-callback, as it can by any `rescue => e`.
+- **SQL containing invalid UTF-8 (e.g. a binary literal inlined by an adapter that doesn't use prepared statements) failed the host's query.** The SQL sanitizer's regexes raised `ArgumentError`; the SQL is now scrubbed first and the query is tracked.
+- **A param key that isn't valid UTF-8 made DeadBro drop the request's params.** The sensitive-key check raised on it; keys are now scrubbed first, so the params are kept and still redacted. (Only reachable from a JSON body in an app with no `filter_parameters`; otherwise Rails fails the request on such a key first.)
+
+### Changed
+- Cache keys, Redis keys and commands, job arguments and log messages are scrubbed where they're captured, so a bad byte in one of them (e.g. a cache key built from the user agent) no longer costs the request a full copy of its payload.
+- If a payload still can't be JSON-encoded because some other string isn't valid UTF-8, the client retries once with every string in the payload scrubbed rather than losing it. Payloads that can't be serialized even then are dropped and counted in `DeadBro.client.serialization_failures`.
 
 ## [0.2.32] - 2026-09-22
 
