@@ -141,6 +141,8 @@ module DeadBro
           gc_pressure: gc_pressure,
           ar_instantiation_count: ar_instantiation_count,
           status: has_error ? "failed" : "completed",
+          sql_count: DeadBro::Subscriber.sql_count(sql_queries),
+          sql_cached_count: DeadBro::Subscriber.sql_cached_count(sql_queries),
           sql_queries: sql_queries,
           transaction_events: transaction_events,
           rails_env: DeadBro.env,
@@ -307,6 +309,7 @@ module DeadBro
           count: stats[:count] || 0,
           heap_allocated_pages: stats[:heap_allocated_pages] || 0,
           heap_sorted_pages: stats[:heap_sorted_pages] || 0,
+          heap_live_slots: stats[:heap_live_slots] || 0,
           total_allocated_objects: stats[:total_allocated_objects] || 0
         }
       else

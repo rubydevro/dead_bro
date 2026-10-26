@@ -143,13 +143,16 @@ module DeadBro
           }
         end
 
+        # One GC.stat read for both the leak-detection sample and the payload.
+        end_gc_stats = gc_stats
+
         # Record memory sample for leak detection (only if memory tracking enabled)
         if DeadBro.configuration.memory_tracking_enabled
           DeadBro::MemoryLeakDetector.record_memory_sample({
             memory_usage: memory_usage_mb,
-            gc_count: gc_stats[:count],
-            heap_pages: gc_stats[:heap_allocated_pages],
-            object_count: gc_stats[:heap_live_slots],
+            gc_count: end_gc_stats[:count],
+            heap_pages: end_gc_stats[:heap_allocated_pages],
+            object_count: end_gc_stats[:heap_live_slots],
             request_id: data[:request_id],
             controller: data[:controller],
             action: data[:action]
@@ -166,8 +169,9 @@ module DeadBro
           view_runtime_ms: data[:view_runtime],
           db_runtime_ms: data[:db_runtime],
           memory_usage: memory_usage_mb,
-          gc_stats: gc_stats,
-          sql_count: sql_count(data),
+          gc_stats: end_gc_stats,
+          sql_count: sql_count(sql_queries),
+          sql_cached_count: sql_cached_count(sql_queries),
           sql_queries: sql_queries,
           transaction_events: transaction_events,
           http_outgoing: Thread.current[:dead_bro_http_events] || [],
@@ -473,6 +477,7 @@ module DeadBro
           count: stats[:count] || 0,
           heap_allocated_pages: stats[:heap_allocated_pages] || 0,
           heap_sorted_pages: stats[:heap_sorted_pages] || 0,
+          heap_live_slots: stats[:heap_live_slots] || 0,
           total_allocated_objects: stats[:total_allocated_objects] || 0
         }
       else
@@ -482,20 +487,24 @@ module DeadBro
       {}
     end
 
-    def self.sql_count(data)
-      # Count SQL queries from the payload if available
-      if data[:sql_count]
-        data[:sql_count]
-      elsif defined?(ActiveRecord) && ActiveRecord::Base.connection
-        # Try to get from ActiveRecord connection
-        begin
-          ActiveRecord::Base.connection.query_cache.size
-        rescue
-          0
-        end
-      else
-        0
-      end
+    # Number of SQL statements run during the request, query-cache hits included
+    # (the same count as Rails' "ActiveRecord: …ms (N queries, M cached)" log
+    # line). Summed from SqlSubscriber.stop_request_tracking's per-statement
+    # aggregates, which count every query — the raw query list stops at
+    # MAX_TRACKED_QUERIES. This used to read
+    # ActiveRecord::Base.connection.query_cache.size: the number of distinct
+    # cached SELECTs, an LRU capped at 100 since Rails 7.1, so every N+1 page
+    # reported "100" — and it leased a DB connection on requests with no SQL.
+    def self.sql_count(sql_queries)
+      Array(sql_queries).sum { |agg| agg[:count].to_i }
+    rescue
+      0
+    end
+
+    # How many of sql_count were answered by the query cache, sent separately so
+    # the dashboard can tell repeated cache hits from database round trips.
+    def self.sql_cached_count(sql_queries)
+      Array(sql_queries).sum { |agg| agg[:cached_count].to_i }
     rescue
       0
     end

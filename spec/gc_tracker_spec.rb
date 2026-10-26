@@ -27,6 +27,22 @@ RSpec.describe DeadBro::GcTracker do
       snap = described_class.snapshot
       expect(snap).to include(:minor_gc_count, :total_allocated_objects)
       expect(snap).not_to have_key(:heap_live_slots)
+      expect(snap).not_to have_key(:gc_state)
+    end
+
+    it "includes the GC phase with the memory-tracking enrichment" do
+      allow(DeadBro.configuration).to receive(:memory_tracking_enabled).and_return(true)
+      allow(GC).to receive(:latest_gc_info).and_call_original
+      allow(GC).to receive(:latest_gc_info).with(:state).and_return(:sweeping)
+      expect(described_class.snapshot[:gc_state]).to eq(:sweeping)
+    end
+
+    it "keeps the rest of the snapshot when the VM can't report a GC phase" do
+      allow(DeadBro.configuration).to receive(:memory_tracking_enabled).and_return(true)
+      allow(GC).to receive(:latest_gc_info).and_raise(ArgumentError)
+      snap = described_class.snapshot
+      expect(snap).to include(:heap_live_slots, :malloc_increase_bytes)
+      expect(snap[:gc_state]).to be_nil
     end
   end
 
@@ -59,6 +75,21 @@ RSpec.describe DeadBro::GcTracker do
       result = described_class.diff(before, after)
       expect(result).not_to have_key(:heap_live_slots_growth)
       expect(result).not_to have_key(:malloc_increase_bytes)
+      expect(result).not_to have_key(:gc_state_at_end)
+    end
+
+    # A GC counted in the window can still be marking or sweeping when it closes;
+    # until it finishes, heap_live_slots_growth includes garbage it hasn't freed.
+    it "reports the GC phase from the end of the window as a string" do
+      b = before.merge(heap_live_slots: 100_000, gc_state: :none)
+      a = after.merge(heap_live_slots: 100_500, gc_state: :marking)
+      expect(described_class.diff(b, a)[:gc_state_at_end]).to eq("marking")
+    end
+
+    it "leaves gc_state_at_end out when no GC phase was read" do
+      b = before.merge(heap_live_slots: 100_000)
+      a = after.merge(heap_live_slots: 100_500, gc_state: nil)
+      expect(described_class.diff(b, a)).not_to have_key(:gc_state_at_end)
     end
 
     it "converts gc_time_ns to gc_time_ms" do
@@ -95,6 +126,13 @@ RSpec.describe DeadBro::GcTracker do
       described_class.start_request_tracking
       result = described_class.stop_request_tracking
       expect(result).to include(:minor_gc_runs, :major_gc_runs, :allocated_objects)
+    end
+
+    it "reports a real GC phase after a round-trip with memory tracking on" do
+      allow(DeadBro.configuration).to receive(:memory_tracking_enabled).and_return(true)
+      described_class.start_request_tracking
+      result = described_class.stop_request_tracking
+      expect(%w[none marking sweeping]).to include(result[:gc_state_at_end])
     end
 
     it "clears the thread key after stop" do

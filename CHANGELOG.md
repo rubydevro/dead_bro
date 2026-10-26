@@ -12,6 +12,23 @@
 ### Fixed
 - **An HTTP request made through Faraday was recorded twice:** once by DeadBro's Faraday middleware and once by its `Net::HTTP` or Typhoeus hook underneath, so its time was counted twice. It is now recorded once, by the Faraday middleware, which also sends the request's start offset and exception class as the `Net::HTTP` hook does. Elasticsearch requests sent through Faraday are recorded once too.
 
+## [0.2.37] - 2026-10-26
+
+### Fixed
+- **`sql_count` stopped at 100 on any page that ran more queries.** It was never a query count: the subscriber read `ActiveRecord::Base.connection.query_cache.size`, the number of distinct SELECTs in the query cache — an LRU capped at 100 entries since Rails 7.1. An N+1 page that ran 188 queries reported "SQL Count 100" and "100 calls/request". `sql_count` is now the sum of the per-statement aggregate counts the SQL subscriber already keeps (every query, not only the first `MAX_TRACKED_QUERIES`), with query-cache hits included the way Rails counts them in its `(N queries, M cached)` log line. The old lookup also leased a database connection on requests that ran no SQL; nothing in the subscriber touches `ActiveRecord::Base.connection` any more.
+- Background jobs sent no `sql_count` at all, so the dashboard showed 0 database calls for every job; job payloads now carry the same count.
+
+### Added
+- `sql_cached_count` on request and job payloads: how many of `sql_count` were answered by the query cache.
+
+## [0.2.36] - 2026-10-25
+
+### Added
+- **`gc_pressure` now says whether the window's GC had finished.** `gc_state_at_end` is the GC's phase when a request or job window closes — `"none"`, `"marking"` or `"sweeping"`, from `GC.latest_gc_info(:state)` — sent with the other memory-tracking fields. Ruby marks and sweeps in steps between allocations, so a GC counted in the window is often still running when it closes, and until it finishes `heap_live_slots_growth` still counts garbage it hasn't freed. The dashboard uses it so a sample measured mid-GC isn't flagged as a possible leak. It's a single-key read; no hash is built.
+
+### Fixed
+- **The in-process leak detector's `object_count` was always 0.** `gc_stats` never read `heap_live_slots`, so every `MemoryLeakDetector` sample recorded `object_count: 0` and the `object_stats` / `memory_efficiency` figures from `DeadBro::MemoryHelpers.analyze_memory` were meaningless. `gc_stats` now includes `heap_live_slots` — in request and job payloads alike — and the request's leak sample and payload share one `GC.stat` read. `average_memory_per_object_kb` is now actually in KB; it divided RSS in MB by the object count.
+
 ## [0.2.35] - 2026-10-21
 
 ### Fixed
