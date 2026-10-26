@@ -91,6 +91,8 @@ module DeadBro
       frame[:slot] = events.length
       events << nil
       active_stack << frame
+      # The block's span in the request's span tree (nil in a job).
+      span_frame = DeadBro::SpanTracker.enter_watch(sanitized_label)
 
       begin
         yield
@@ -104,6 +106,8 @@ module DeadBro
         raise
       ensure
         active_stack.pop if active_stack.last.equal?(frame)
+        DeadBro::SpanTracker.leave_watch(span_frame)
+        frame[:span_id] = span_frame[:id] if span_frame.is_a?(Hash)
         append_completed_span(events, frame)
       end
     end
@@ -178,6 +182,7 @@ module DeadBro
         error: frame[:error] == true
       }
       span[:exception_class] = frame[:exception_class] if frame[:exception_class]
+      span[:span_id] = frame[:span_id] if frame[:span_id]
       tags = frame[:tags]
       span[:tags] = tags if tags.is_a?(Hash) && tags.any?
 

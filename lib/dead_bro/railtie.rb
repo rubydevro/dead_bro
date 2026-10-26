@@ -53,6 +53,11 @@ if defined?(Rails) && defined?(Rails::Railtie)
           require "dead_bro/view_rendering_subscriber"
           DeadBro::ViewRenderingSubscriber.subscribe!(client: shared_client)
 
+          # Install the span tree (controller action and view spans; the
+          # middleware spans come from the probes installed below)
+          require "dead_bro/span_tracker"
+          DeadBro::SpanTracker.subscribe!
+
           # Install lightweight memory tracking (default)
           require "dead_bro/lightweight_memory_tracker"
           require "dead_bro/memory_leak_detector"
@@ -100,6 +105,17 @@ if defined?(Rails) && defined?(Rails::Railtie)
         else
           app.config.middleware.use(::DeadBro::ErrorMiddleware, shared_client)
         end
+      rescue
+        # Never raise in Railtie init
+      end
+
+      # Time every middleware and the router for the span tree. Railtie
+      # initializers run before the application's build_middleware_stack, so
+      # the probes are in place when Rails builds the stack.
+      initializer "dead_bro.middleware_probes" do
+        require "dead_bro/span_tracker"
+        require "dead_bro/middleware_probe"
+        DeadBro::MiddlewareProbe.install!
       rescue
         # Never raise in Railtie init
       end

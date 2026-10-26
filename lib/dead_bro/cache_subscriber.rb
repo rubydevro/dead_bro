@@ -69,7 +69,7 @@ module DeadBro
     def self.build_event(name, data, duration_ms, start_offset_ms = nil)
       return nil unless data.is_a?(Hash)
 
-      {
+      event = {
         event: name,
         duration_ms: duration_ms,
         start_offset_ms: start_offset_ms,
@@ -80,6 +80,9 @@ module DeadBro
         namespace: safe_namespace(data[:namespace]),
         at: Time.now.utc.to_i
       }
+      parent_id = DeadBro::SpanTracker.current_id
+      event[:parent_id] = parent_id if parent_id
+      event
     rescue
       nil
     end

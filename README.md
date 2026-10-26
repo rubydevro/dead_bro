@@ -118,6 +118,18 @@ DeadBro automatically tracks view rendering performance for each request. This i
 - **Slow view detection**: Identification of the slowest rendering views
 - **Frequency analysis**: Most frequently rendered views
 
+## Request Trace (span tree)
+
+Each web request carries its span tree as `spans`, which DeadBro shows as a nested Request Trace with each span's total and self time:
+
+- **Spans**: every middleware of the Rails middleware stack and the router it ends in, the controller action, view renders (layouts, templates, partials, collections), `DeadBro.watch` blocks and SQL queries. Each has an `id`, the `parent_id` of the span it ran inside (`nil` at the top) and a `kind` (`middleware`, `endpoint`, `action`, `view`, `watch`, `sql`).
+- **Repeated calls**: calls with the same name under the same parent share one span with a `count`. A partial rendered 50 times from one template is one span; the query it runs each time is one span under it.
+- **Times**: `total_ms` is the calls' summed duration, nested spans included; `start_ms` and `end_ms` are the first call's start and the last call's end, as offsets from the request's tracking start like every `start_offset_ms` (middleware that runs before DeadBro's own has negative offsets).
+- **Other events**: cache, Redis, HTTP, Elasticsearch and transaction events stay in their own lists and carry the `parent_id` of the span they ran in. `DeadBro.watch` events carry the `span_id` of their block, and SQL spans refer to their `sql_queries` entry by `ref`.
+- **Limits**: up to 500 spans per request; `spans_dropped` counts the ones left out, whose time stays in their parent's self time.
+
+Middleware is timed by a probe Rails places around each middleware when it builds the middleware stack. The middleware stack returns after the controller action has finished, so a request's payload is sent once the outermost middleware has returned. Background jobs don't send `spans`.
+
 ## Memory Tracking & Leak Detection
 
 DeadBro automatically tracks memory usage and detects memory leaks with minimal performance impact. This includes:

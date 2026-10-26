@@ -75,6 +75,8 @@ module DeadBro
                   start_offset_ms: start_offset_ms,
                   exception: error && error.class.name
                 }
+                parent_id = DeadBro::SpanTracker.current_id
+                payload[:parent_id] = parent_id if parent_id
                 if Thread.current[THREAD_LOCAL_KEY] && DeadBro::HttpInstrumentation.should_continue_tracking?
                   Thread.current[THREAD_LOCAL_KEY] << payload
                 end
@@ -116,6 +118,8 @@ module DeadBro
                   status: response && response.code,
                   duration_ms: duration_ms
                 }
+                parent_id = DeadBro::SpanTracker.current_id
+                payload[:parent_id] = parent_id if parent_id
                 if Thread.current[THREAD_LOCAL_KEY] && DeadBro::HttpInstrumentation.should_continue_tracking?
                   Thread.current[THREAD_LOCAL_KEY] << payload
                 end
@@ -172,6 +176,8 @@ module DeadBro
                     status: response&.status,
                     duration_ms: duration_ms
                   }
+                  parent_id = DeadBro::SpanTracker.current_id
+                  payload[:parent_id] = parent_id if parent_id
                   key = DeadBro::HttpInstrumentation::THREAD_LOCAL_KEY
                   if Thread.current[key] && DeadBro::HttpInstrumentation.should_continue_tracking?
                     Thread.current[key] << payload

@@ -13,6 +13,10 @@ module DeadBro
         # drop with an excluded request) — ErrorMiddleware must not send it again.
         mark_reported(data)
 
+        # Closes the action span opened at start_processing, whether or not
+        # this request is sent.
+        DeadBro::SpanTracker.finish_action(started, finished)
+
         # When disabled remotely, fire a heartbeat at most once per minute so the gem
         # can detect when tracking has been re-enabled, then skip all tracking.
         unless DeadBro.configuration.enabled
@@ -187,6 +191,14 @@ module DeadBro
           watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
+        # The span tree (see SpanTracker); the middleware spans are added when
+        # the payload is sent.
+        spans = DeadBro::SpanTracker.payload_spans
+        if spans
+          detail_fields[:spans] = spans
+          spans_dropped = DeadBro::SpanTracker.payload_spans_dropped
+          detail_fields[:spans_dropped] = spans_dropped if spans_dropped
+        end
 
         # Report exceptions attached to this action (e.g. controller/view errors)
         if data[:exception] || data[:exception_object]
@@ -219,7 +231,7 @@ module DeadBro
             )
 
             event_name = (exception_class || exception_obj&.class&.name || "exception").to_s
-            client.post_metric(event_name: event_name, payload: error_payload, force: true)
+            DeadBro::SpanTracker.post(client, event_name, error_payload, request_type_key)
           rescue
           ensure
             next
@@ -243,10 +255,12 @@ module DeadBro
           user_agent: safe_user_agent(data),
           user_id: extract_user_id(data)
         )
-        # force: true — the sampling decision (global or per-request-type) was
-        # already made above; client#post_metric must not re-roll it with the
-        # global-only rate, which would silently override a per-type sample rate.
-        client.post_metric(event_name: name, payload: payload, force: true)
+        # Sent with force: true — the sampling decision (global or
+        # per-request-type) was already made above; client#post_metric must not
+        # re-roll it with the global-only rate, which would silently override a
+        # per-type sample rate. Held until the middleware chain returns when the
+        # request runs inside one (see SpanTracker.post).
+        DeadBro::SpanTracker.post(client, name, payload, request_type_key)
       rescue *DeadBro::CONTAINED_ERRORS
         # Anything raised here would fail the host's request (see
         # DeadBro::CONTAINED_ERRORS) — drop this request's metrics instead.

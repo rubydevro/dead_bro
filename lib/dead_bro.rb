@@ -30,6 +30,8 @@ module DeadBro
   autoload :MemoryDetails, "dead_bro/memory_details"
   autoload :Logger, "dead_bro/logger"
   autoload :WatchTracker, "dead_bro/watch_tracker"
+  autoload :SpanTracker, "dead_bro/span_tracker"
+  autoload :MiddlewareProbe, "dead_bro/middleware_probe"
   autoload :Sanitizer, "dead_bro/sanitizer"
   begin
     require "dead_bro/railtie"

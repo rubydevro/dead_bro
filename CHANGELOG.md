@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [0.2.36] - 2026-10-23
+
+### Added
+- **Nested Request Trace.** Each request now sends its span tree as `spans`: the Rack middleware chain, the router, the controller action, view renders (layouts, templates, partials and collections), `DeadBro.watch` blocks and SQL queries, each with an `id` and the id of the span it ran inside (`parent_id`). Repeated calls on the same path share one span with a `count`: a partial rendered 50 times from one template is one span, and the query it runs each time is one span under it. A span's `total_ms` is its calls' summed time with the spans nested in it included, and `start_ms` / `end_ms` are its first call's start and its last call's end. Cache, Redis, HTTP, Elasticsearch and transaction events carry the `parent_id` of the span they ran in, `DeadBro.watch` events the `span_id` of their block, and `sql_queries` entries the `id` their SQL spans refer to. DeadBro shows the tree with each span's total time and self time (total minus the spans nested in it). Up to 500 spans are kept per request; `spans_dropped` counts the ones left out. Background jobs don't send `spans`.
+- **Middleware timing.** Each middleware of the app's Rails middleware stack and the router it ends in are timed as spans, so the trace shows the time each one spends before and after the app.
+
+### Changed
+- A request's payload is sent once the outermost middleware has returned instead of when the controller action finishes, so that the middleware spans are complete.
+
 ## [0.2.35] - 2026-10-21
 
 ### Fixed

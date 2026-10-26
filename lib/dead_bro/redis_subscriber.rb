@@ -90,6 +90,8 @@ module DeadBro
                 db: RedisSubscriber.safe_db(@db),
                 error: error ? error.class.name : nil
               }
+              parent_id = DeadBro::SpanTracker.current_id
+              event[:parent_id] = parent_id if parent_id
 
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
@@ -122,6 +124,8 @@ module DeadBro
                 start_offset_ms: start_offset_ms,
                 db: RedisSubscriber.safe_db(@db)
               }
+              parent_id = DeadBro::SpanTracker.current_id
+              event[:parent_id] = parent_id if parent_id
 
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
@@ -154,6 +158,8 @@ module DeadBro
                 start_offset_ms: start_offset_ms,
                 db: RedisSubscriber.safe_db(@db)
               }
+              parent_id = DeadBro::SpanTracker.current_id
+              event[:parent_id] = parent_id if parent_id
 
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
@@ -220,7 +226,7 @@ module DeadBro
 
     def self.build_event(name, data, duration_ms, start_offset_ms = nil)
       cmd = extract_command(data)
-      {
+      event = {
         event: name.to_s,
         command: cmd[:command],
         key: cmd[:key],
@@ -229,6 +235,9 @@ module DeadBro
         start_offset_ms: start_offset_ms,
         db: safe_db(data[:db])
       }
+      parent_id = DeadBro::SpanTracker.current_id
+      event[:parent_id] = parent_id if parent_id
+      event
     rescue
       nil
     end
