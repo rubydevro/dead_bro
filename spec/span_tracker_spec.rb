@@ -65,6 +65,14 @@ RSpec.describe DeadBro::SpanTracker do
     ActiveSupport::Notifications.instrument("sql.active_record", sql: statement, name: name, connection_id: 1) {}
   end
 
+  # The events of a Rails.cache.fetch miss: the read, the block run inside
+  # cache_generate, the write.
+  def fetch_miss(key)
+    ActiveSupport::Notifications.instrument("cache_read.active_support", key: key, hit: false) {}
+    ActiveSupport::Notifications.instrument("cache_generate.active_support", key: key) { yield }
+    ActiveSupport::Notifications.instrument("cache_write.active_support", key: key) {}
+  end
+
   def render(event, path)
     ActiveSupport::Notifications.instrument("render_#{event}.action_view", identifier: "/srv/app/app/views/#{path}") { yield if block_given? }
   end
@@ -299,6 +307,100 @@ RSpec.describe DeadBro::SpanTracker do
 
     expect(first_spans).to eq(first_snapshot)
     expect(posted.last[:payload][:spans]).not_to equal(first_spans)
+  end
+
+  # CacheSubscriber's listener for cache_generate runs before ours or after
+  # it, depending on which subscribed first.
+  [:cache_subscriber_first, :span_tracker_first].each do |order|
+    it "nests what a Rails.cache.fetch block runs under the block's span (#{order})" do
+      if order == :span_tracker_first
+        DeadBro::CacheSubscriber::EVENTS.each { |event| ActiveSupport::Notifications.unsubscribe(event) }
+        ActiveSupport::Notifications.subscribe(described_class::CACHE_GENERATE_EVENT, described_class::CacheGenerateListener.new)
+        DeadBro::CacheSubscriber.subscribe!
+      end
+      app = rails_stack(router do
+        fetch_miss("dashboard/summary") { sql("SELECT COUNT(*) FROM posts") }
+      end)
+
+      app.call({})
+
+      payload = posted.first[:payload]
+      nodes = spans_of(payload)
+      action = nodes.fetch("PostsController#index")
+      block = nodes.fetch("dashboard/summary")
+      query = payload[:spans].find { |node| node[:kind] == "sql" }
+      expect(block).to include(kind: "cache", type: "generate", count: 1, parent_id: action[:id])
+      expect(query[:parent_id]).to eq(block[:id])
+
+      generate = payload[:cache_events].find { |event| event[:event] == "cache_generate.active_support" }
+      others = payload[:cache_events] - [generate]
+      expect(generate).to include(span_id: block[:id], parent_id: action[:id])
+      expect(others.map { |event| [event[:event], event[:parent_id], event.key?(:span_id)] })
+        .to contain_exactly(["cache_read.active_support", action[:id], false], ["cache_write.active_support", action[:id], false])
+    end
+  end
+
+  it "folds fetch blocks whose keys differ only in their digits into one span" do
+    app = rails_stack(router do
+      fetch_miss("products/12") { sql("SELECT * FROM products WHERE id = 12") }
+      fetch_miss("products/7") { sql("SELECT * FROM products WHERE id = 7") }
+      fetch_miss("settings") {}
+    end)
+
+    app.call({})
+
+    blocks = posted.first[:payload][:spans].select { |node| node[:kind] == "cache" }
+    expect(blocks.map { |node| [node[:name], node[:count]] }).to contain_exactly(["products/?", 2], ["settings", 1])
+  end
+
+  # ActionController::Live copies the request thread's locals — the span
+  # context among them — to the thread it runs the action on, and the request
+  # thread leaves the middleware chain once the response is committed.
+  it "records an ActionController::Live action on its own thread, apart from the next request on the request thread" do
+    committed = Queue.new
+    resume = Queue.new
+    live_thread = nil
+    live = lambda do |env|
+      request_thread = Thread.current
+      locals = request_thread.keys.map { |key| [key, request_thread[key]] }
+      live_thread = Thread.new do
+        locals.each { |key, value| Thread.current[key] = value }
+        router(controller: "StreamsController", action: "show") do
+          render(:template, "streams/show.html.erb") do
+            committed << true
+            resume.pop
+          end
+          render(:partial, "streams/_chunk.html.erb")
+        end.call(env)
+      end
+      committed.pop
+      [200, {}, ["streaming"]]
+    end
+    rails_stack(live).call({})
+
+    # The request thread serves the next request; the Live action finishes
+    # while it renders.
+    rails_stack(router do
+      render(:template, "posts/index.html.erb") do
+        resume << true
+        live_thread.join
+        render(:partial, "posts/_post.html.erb")
+      end
+    end).call({})
+
+    streams, posts = posted.map { |post| post[:payload] }.partition { |payload| payload[:controller] == "StreamsController" }.map(&:first)
+    stream_nodes = spans_of(streams)
+    expect(stream_nodes.keys).to contain_exactly("StreamsController#show", "views/streams/show.html.erb", "views/streams/_chunk.html.erb")
+    expect(stream_nodes.fetch("StreamsController#show")[:parent_id]).to be_nil
+
+    post_nodes = spans_of(posts)
+    action = post_nodes.fetch("PostsController#index")
+    template = post_nodes.fetch("views/posts/index.html.erb")
+    expect(action).to include(kind: "action", count: 1)
+    expect(template[:parent_id]).to eq(action[:id])
+    expect(post_nodes.fetch("views/posts/_post.html.erb")[:parent_id]).to eq(template[:id])
+    expect(post_nodes.keys).not_to include("StreamsController#show")
+    expect(posts[:spans]).not_to equal(streams[:spans])
   end
 end
 

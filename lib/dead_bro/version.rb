@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module DeadBro
-  VERSION = "0.2.36"
+  VERSION = "0.2.38"
 end

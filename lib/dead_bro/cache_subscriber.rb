@@ -80,8 +80,16 @@ module DeadBro
         namespace: safe_namespace(data[:namespace]),
         at: Time.now.utc.to_i
       }
-      parent_id = DeadBro::SpanTracker.current_id
-      event[:parent_id] = parent_id if parent_id
+      # A Rails.cache.fetch block is a span of the request's tree: its event
+      # names that span, which ran in the span the event's parent_id gives.
+      node = DeadBro::SpanTracker.cache_node(data)
+      if node
+        event[:span_id] = node[:id]
+        event[:parent_id] = node[:parent_id] if node[:parent_id]
+      else
+        parent_id = DeadBro::SpanTracker.current_id
+        event[:parent_id] = parent_id if parent_id
+      end
       event
     rescue
       nil

@@ -6,25 +6,31 @@ module DeadBro
   # and show each span's total (inclusive) and self (exclusive) time.
   #
   # Nodes are kept for the spans other spans run inside — Rack middleware and
-  # the router (MiddlewareProbe), the controller action, view renders and
-  # DeadBro.watch blocks — and for SQL queries, and are sent as the request's
-  # `spans`. Repeated calls on the same path share one node: a partial rendered
-  # 50 times inside one template is one node with count 50, and the query it
-  # runs each time is one child node with count 50. Cache, Redis, HTTP,
-  # Elasticsearch and transaction events stay in their own lists and carry the
-  # parent_id of the span they ran inside.
+  # the router (MiddlewareProbe), the controller action, view renders,
+  # DeadBro.watch blocks and the block a Rails.cache.fetch miss runs — and for
+  # SQL queries, and are sent as the request's `spans`. Repeated calls on the
+  # same path share one node: a partial rendered 50 times inside one template
+  # is one node with count 50, and the query it runs each time is one child
+  # node with count 50. Cache, Redis, HTTP, Elasticsearch and transaction
+  # events stay in their own lists and carry the parent_id of the span they
+  # ran inside; the cache event of a fetch block carries its node's span_id.
   #
   # Node fields: id, parent_id (nil at the top), kind (middleware, endpoint,
-  # action, view, watch, sql), name, count, total_ms — the summed duration of
-  # the node's calls, nested spans included — and start_ms / end_ms — the first
-  # call's start and the last call's end, as offsets from the tracking start
-  # like every other start_offset_ms. View nodes add type (template, layout,
-  # partial, collection); SQL nodes carry ref, the id of their sql_queries
-  # entry, instead of a name.
+  # action, view, watch, cache, sql), name, count, total_ms — the summed
+  # duration of the node's calls, nested spans included — and start_ms /
+  # end_ms — the first call's start and the last call's end, as offsets from
+  # the tracking start like every other start_offset_ms. View nodes add type
+  # (template, layout, partial, collection) and cache nodes type generate;
+  # SQL nodes carry ref, the id of their sql_queries entry, instead of a name.
   #
   # The middleware chain returns after the controller action has finished, so
   # a request that runs inside it has its payload held until the outermost
   # middleware returns (see .post), and is sent with the middleware spans.
+  #
+  # The tree belongs to the thread that runs the request. ActionController::Live
+  # runs the action on a thread of its own, with the request thread's locals
+  # copied over; that thread records the action in a tree of its own (see
+  # .live_context).
   module SpanTracker
     THREAD_KEY = :dead_bro_span_context
 
@@ -39,12 +45,19 @@ module DeadBro
     ACTION = "action"
     VIEW = "view"
     WATCH = "watch"
+    CACHE = "cache"
     SQL = "sql"
 
     # Frame pushed for a span past MAX_NODES, so leaving it still pops the
     # right frame.
     DROPPED_VIEW = {kind: VIEW}.freeze
     DROPPED_WATCH = {kind: WATCH}.freeze
+    DROPPED_CACHE = {kind: CACHE}.freeze
+
+    # Rails.cache.fetch runs its block inside this event when the key misses.
+    CACHE_GENERATE_EVENT = "cache_generate.active_support"
+    # Fetch blocks whose keys differ only in their digits share a node.
+    CACHE_KEY_DIGITS = /\d+/
 
     VIEW_EVENTS = {
       "render_layout.action_view" => "layout",
@@ -55,10 +68,14 @@ module DeadBro
 
     # One request's tree, reused by the thread's next request.
     class Context
-      attr_reader :nodes, :dropped
+      attr_reader :nodes, :dropped, :thread
       attr_accessor :pending
 
       def initialize
+        # The thread this tree is recorded on. Another thread holding this
+        # context (ActionController::Live copies the request thread's locals)
+        # records nothing into it.
+        @thread = Thread.current
         # Open spans inside the middleware chain, innermost last: a node Hash
         # or a DROPPED_* marker. The ids are what starts now gets as
         # parent_id; the starts are Float seconds (CLOCK_REALTIME, the clock
@@ -70,7 +87,11 @@ module DeadBro
         # their node.
         @view_index = {}
         @watch_index = {}
+        @cache_index = {}
         @sql_index = {}
+        # Each fetch block's event payload => its node, for CacheSubscriber,
+        # whose listener for the same event may run before or after ours.
+        @cache_payloads = {}.compare_by_identity
         # Middleware frames, as parallel arrays: the chain runs on every
         # request, so recording it allocates nothing. Frame i is span i + 1
         # (the other spans are numbered after MAX_RACK_FRAMES); @rack_current
@@ -91,7 +112,9 @@ module DeadBro
         @frame_starts.clear
         @view_index.clear
         @watch_index.clear
+        @cache_index.clear
         @sql_index.clear
+        @cache_payloads.clear
         @rack_probes.clear
         @rack_parents.clear
         @rack_starts.clear
@@ -207,6 +230,30 @@ module DeadBro
         j = @frames.size - 1
         j -= 1 while j >= 0 && !@frames[j].equal?(frame)
         leave_frame(j, now) if j >= 0
+      end
+
+      # A Rails.cache.fetch miss: the block it runs nests in this span. Keys
+      # that differ only in their digits share a node, named by that pattern.
+      def enter_cache_generate(payload, key, now)
+        pattern = key.gsub(CACHE_KEY_DIGITS, "?")
+        node = node_for(CACHE, @cache_index, pattern) do |created|
+          created[:name] = key
+          created[:type] = "generate"
+        end
+        if node
+          node[:name] = pattern unless node[:name] == key
+          @cache_payloads[payload] = node
+        end
+        push(node || DROPPED_CACHE, node ? node[:id] : current_id, now)
+      end
+
+      def leave_cache_generate(now)
+        j = innermost(CACHE)
+        leave_frame(j, now) if j
+      end
+
+      def cache_node(payload)
+        @cache_payloads[payload]
       end
 
       def sql(key, ref, started, finished)
@@ -342,6 +389,18 @@ module DeadBro
       end
     end
 
+    # cache_generate wraps the block of a Rails.cache.fetch miss, so what the
+    # block runs nests in its span instead of sitting next to it.
+    class CacheGenerateListener
+      def start(_name, _id, payload)
+        SpanTracker.enter_cache_generate(payload)
+      end
+
+      def finish(_name, _id, _payload)
+        SpanTracker.leave_cache_generate
+      end
+    end
+
     module_function
 
     def subscribe!
@@ -351,6 +410,7 @@ module DeadBro
         ActiveSupport::Notifications.subscribe(event_name, ViewListener.new(type))
       end
       ActiveSupport::Notifications.subscribe("start_processing.action_controller", ActionListener.new)
+      ActiveSupport::Notifications.subscribe(CACHE_GENERATE_EVENT, CacheGenerateListener.new)
     rescue
       # Never raise from instrumentation install
     end
@@ -359,14 +419,39 @@ module DeadBro
       Process.clock_gettime(Process::CLOCK_REALTIME)
     end
 
+    # This thread's context, created on first use — and in place of one
+    # copied from another thread.
     def context
-      Thread.current[THREAD_KEY] ||= Context.new
+      own_context || (Thread.current[THREAD_KEY] = Context.new)
+    end
+
+    def own_context
+      ctx = Thread.current[THREAD_KEY]
+      ctx if ctx && ctx.thread.equal?(Thread.current)
     end
 
     # The context of a request being tracked on this thread, else nil.
     def tracking_context
-      ctx = Thread.current[THREAD_KEY]
+      ctx = own_context
       ctx if ctx&.tracking?
+    end
+
+    # ActionController::Live runs the action on a thread of its own, with the
+    # request thread's locals copied over — that thread's context and the
+    # tracking start among them. The request thread leaves the middleware
+    # chain once the response is committed, while the action may still run,
+    # so the action thread records the action in a context of its own,
+    # measured from the same tracking start. Nil anywhere else.
+    def live_context
+      copied = Thread.current[THREAD_KEY]
+      return nil if copied.nil? || copied.thread.equal?(Thread.current)
+
+      tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+      return nil unless tracking_start
+
+      ctx = Thread.current[THREAD_KEY] = Context.new
+      ctx.start_tracking(tracking_start.to_f)
+      ctx
     end
 
     # The id of the span running now — the parent_id of an event recorded now.
@@ -385,7 +470,7 @@ module DeadBro
     end
 
     def stop_request
-      Thread.current[THREAD_KEY]&.stop_tracking
+      own_context&.stop_tracking
     rescue *DeadBro::CONTAINED_ERRORS
     end
 
@@ -405,7 +490,7 @@ module DeadBro
 
     # Leaving the outermost frame (0) sends the payloads held for it.
     def rack_leave(frame)
-      ctx = Thread.current[THREAD_KEY]
+      ctx = own_context
       return unless ctx
 
       ctx.rack_leave(frame, now)
@@ -420,7 +505,7 @@ module DeadBro
     end
 
     def enter_action
-      tracking_context&.enter_action(now)
+      (tracking_context || live_context)&.enter_action(now)
     rescue *DeadBro::CONTAINED_ERRORS
     end
 
@@ -453,6 +538,28 @@ module DeadBro
     rescue *DeadBro::CONTAINED_ERRORS
     end
 
+    def enter_cache_generate(payload)
+      ctx = tracking_context
+      return unless ctx
+
+      key = defined?(DeadBro::CacheSubscriber) ? DeadBro::CacheSubscriber.safe_key(payload[:key]) : payload[:key]
+      ctx.enter_cache_generate(payload, key.to_s, now)
+    rescue *DeadBro::CONTAINED_ERRORS
+    end
+
+    def leave_cache_generate
+      tracking_context&.leave_cache_generate(now)
+    rescue *DeadBro::CONTAINED_ERRORS
+    end
+
+    # The node of a fetch block's cache_generate event, by the event's
+    # payload; nil for every other event.
+    def cache_node(payload)
+      tracking_context&.cache_node(payload)
+    rescue *DeadBro::CONTAINED_ERRORS
+      nil
+    end
+
     # A query of the request's own SQL tracking (sql_depth 1: an inline job's
     # queries go to the job's payload, whose sql_queries ids are its own).
     def sql(key, ref, started, finished, sql_depth)
@@ -482,7 +589,7 @@ module DeadBro
     # the payload is held and sent when its outermost middleware returns, with
     # the middleware spans closed.
     def post(client, event_name, payload, action_name)
-      ctx = Thread.current[THREAD_KEY]
+      ctx = own_context
       if ctx&.rack_open?
         (ctx.pending ||= []) << [client, event_name, payload, action_name]
       else

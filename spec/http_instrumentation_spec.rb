@@ -114,6 +114,56 @@ RSpec.describe DeadBro::HttpInstrumentation do
 
       expect(middleware.call(env)).to equal(response)
     end
+
+    # Faraday's default adapter sends the request with Net::HTTP, whose hook
+    # would record the same request a second time.
+    it "records a request Faraday sends through Net::HTTP once" do
+      install_net_http_hook
+      described_class.install_faraday!(DeadBro.client)
+      env_class = Struct.new(:url, :method)
+      net_http_adapter = lambda do |env|
+        response = Net::HTTP.get_response(env.url)
+        Struct.new(:status).new(response.code.to_i)
+      end
+
+      with_http_server do |port|
+        DeadBro::FaradayMiddleware.new(net_http_adapter).call(env_class.new(URI("http://127.0.0.1:#{port}/rates"), :get))
+        Net::HTTP.get_response(URI("http://127.0.0.1:#{port}/health"))
+      end
+
+      events = Thread.current[:dead_bro_http_events]
+      expect(events.map { |event| [event[:library], event[:path], event[:status]] })
+        .to eq([["faraday", "/rates", 200], ["net_http", "/health", 200]])
+      expect(events.first[:start_offset_ms]).to be_a(Float)
+      expect(Thread.current[described_class::IN_FARADAY_KEY]).to be_nil
+    end
+  end
+
+  def install_net_http_hook
+    installed = Net::HTTP.ancestors.any? do |mod|
+      mod.instance_methods(false).include?(:request) &&
+        mod.instance_method(:request).source_location&.first&.end_with?("dead_bro/http_instrumentation.rb")
+    end
+    described_class.install_net_http!(DeadBro.client) unless installed
+  end
+
+  # A server on 127.0.0.1 answering 200 to every request.
+  def with_http_server
+    server = TCPServer.new("127.0.0.1", 0)
+    thread = Thread.new do
+      loop do
+        client = server.accept
+        while (line = client.gets) && line != "\r\n"
+        end
+        client.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        client.close
+      end
+    rescue IOError, SystemCallError
+    end
+    yield server.addr[1]
+  ensure
+    server&.close
+    thread&.kill
   end
 
   describe "elasticsearch host detection does not add to http_outgoing" do

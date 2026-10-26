@@ -122,13 +122,13 @@ DeadBro automatically tracks view rendering performance for each request. This i
 
 Each web request carries its span tree as `spans`, which DeadBro shows as a nested Request Trace with each span's total and self time:
 
-- **Spans**: every middleware of the Rails middleware stack and the router it ends in, the controller action, view renders (layouts, templates, partials, collections), `DeadBro.watch` blocks and SQL queries. Each has an `id`, the `parent_id` of the span it ran inside (`nil` at the top) and a `kind` (`middleware`, `endpoint`, `action`, `view`, `watch`, `sql`).
-- **Repeated calls**: calls with the same name under the same parent share one span with a `count`. A partial rendered 50 times from one template is one span; the query it runs each time is one span under it.
+- **Spans**: every middleware of the Rails middleware stack and the router it ends in, the controller action, view renders (layouts, templates, partials, collections), `DeadBro.watch` blocks, the block a `Rails.cache.fetch` miss runs, and SQL queries. Each has an `id`, the `parent_id` of the span it ran inside (`nil` at the top) and a `kind` (`middleware`, `endpoint`, `action`, `view`, `watch`, `cache`, `sql`).
+- **Repeated calls**: calls with the same name under the same parent share one span with a `count`. A partial rendered 50 times from one template is one span; the query it runs each time is one span under it. `Rails.cache.fetch` blocks whose keys differ only in their digits share one span, named by the key with each run of digits as `?`.
 - **Times**: `total_ms` is the calls' summed duration, nested spans included; `start_ms` and `end_ms` are the first call's start and the last call's end, as offsets from the request's tracking start like every `start_offset_ms` (middleware that runs before DeadBro's own has negative offsets).
-- **Other events**: cache, Redis, HTTP, Elasticsearch and transaction events stay in their own lists and carry the `parent_id` of the span they ran in. `DeadBro.watch` events carry the `span_id` of their block, and SQL spans refer to their `sql_queries` entry by `ref`.
+- **Other events**: cache, Redis, HTTP, Elasticsearch and transaction events stay in their own lists and carry the `parent_id` of the span they ran in. The cache event of a `Rails.cache.fetch` block and `DeadBro.watch` events carry the `span_id` of their span, and SQL spans refer to their `sql_queries` entry by `ref`.
 - **Limits**: up to 500 spans per request; `spans_dropped` counts the ones left out, whose time stays in their parent's self time.
 
-Middleware is timed by a probe Rails places around each middleware when it builds the middleware stack. The middleware stack returns after the controller action has finished, so a request's payload is sent once the outermost middleware has returned. Background jobs don't send `spans`.
+Middleware is timed by a probe Rails places around each middleware when it builds the middleware stack. The middleware stack returns after the controller action has finished, so a request's payload is sent once the outermost middleware has returned. An action that uses `ActionController::Live` runs on a thread of its own, and its spans are recorded there, without the middleware chain. Background jobs don't send `spans`.
 
 ## Memory Tracking & Leak Detection
 
