@@ -77,7 +77,7 @@ module DeadBro
             duration_ms = ((finish_time - start_time) * 1000.0).round(2)
 
             begin
-              cmd_info = extract_command_info(command)
+              cmd_info = RedisSubscriber.extract_command(command: command)
               tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
               start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
               event = {
@@ -87,14 +87,14 @@ module DeadBro
                 args_count: cmd_info[:args_count],
                 duration_ms: duration_ms,
                 start_offset_ms: start_offset_ms,
-                db: safe_db(@db),
+                db: RedisSubscriber.safe_db(@db),
                 error: error ? error.class.name : nil
               }
 
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -120,13 +120,13 @@ module DeadBro
                 commands_count: commands_count,
                 duration_ms: duration_ms,
                 start_offset_ms: start_offset_ms,
-                db: safe_db(@db)
+                db: RedisSubscriber.safe_db(@db)
               }
 
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -152,51 +152,15 @@ module DeadBro
                 commands_count: commands_count,
                 duration_ms: duration_ms,
                 start_offset_ms: start_offset_ms,
-                db: safe_db(@db)
+                db: RedisSubscriber.safe_db(@db)
               }
 
               if Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] && RedisSubscriber.should_continue_tracking?
                 Thread.current[RedisSubscriber::THREAD_LOCAL_KEY] << event
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
-        end
-
-        def extract_command_info(command)
-          parts = Array(command).map(&:to_s)
-          command_name = parts.first&.upcase
-          key = parts[1]
-          args_count = (parts.length > 1) ? parts.length - 1 : 0
-
-          {
-            command: safe_command(command_name),
-            key: safe_key(key),
-            args_count: args_count
-          }
-        rescue
-          {command: nil, key: nil, args_count: nil}
-        end
-
-        def safe_command(cmd)
-          return nil if cmd.nil?
-          cmd.to_s[0, 20]
-        rescue
-          nil
-        end
-
-        def safe_key(key)
-          return nil if key.nil?
-          s = key.to_s
-          (s.length > 200) ? s[0, 200] + "…" : s
-        rescue
-          nil
-        end
-
-        def safe_db(db)
-          Integer(db)
-        rescue
-          nil
         end
       end
 
@@ -219,6 +183,7 @@ module DeadBro
             if event && should_continue_tracking?
               Thread.current[THREAD_LOCAL_KEY] << event
             end
+          rescue *DeadBro::CONTAINED_ERRORS
           end
         rescue
         end
@@ -296,14 +261,16 @@ module DeadBro
 
     def self.safe_command(cmd)
       return nil if cmd.nil?
-      cmd.to_s[0, 20]
+      DeadBro::Sanitizer.string(cmd)[0, 20]
     rescue
       nil
     end
 
+    # Redis keys can be binary (digests, packed ids) or embed request data;
+    # scrubbing here keeps one bad byte off the client's slow retry path.
     def self.safe_key(key)
       return nil if key.nil?
-      s = key.to_s
+      s = DeadBro::Sanitizer.string(key)
       (s.length > 200) ? s[0, 200] + "…" : s
     rescue
       nil

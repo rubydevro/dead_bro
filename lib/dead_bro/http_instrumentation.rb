@@ -79,7 +79,7 @@ module DeadBro
                   Thread.current[THREAD_LOCAL_KEY] << payload
                 end
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -120,7 +120,7 @@ module DeadBro
                   Thread.current[THREAD_LOCAL_KEY] << payload
                 end
               end
-            rescue
+            rescue *DeadBro::CONTAINED_ERRORS
             end
           end
         end
@@ -177,7 +177,7 @@ module DeadBro
                     Thread.current[key] << payload
                   end
                 end
-              rescue
+              rescue *DeadBro::CONTAINED_ERRORS
               end
             end
           end

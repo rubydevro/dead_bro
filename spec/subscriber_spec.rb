@@ -133,5 +133,16 @@ RSpec.describe DeadBro::Subscriber do
       expect(result["passenger_count"]).to eq(3)
       expect(result["cardinality"]).to eq(7)
     end
+
+    it "keeps the params, still redacted, when a key isn't valid UTF-8" do
+      bad_key = "na\xA1me".dup.force_encoding(Encoding::UTF_8)
+      data = { params: { bad_key => "x", "password" => "secret", "page" => "2" } }
+
+      expect(described_class.safe_params(data)).to eq(
+        "na�me" => "x",
+        "password" => "[FILTERED]",
+        "page" => "2"
+      )
+    end
   end
 end
