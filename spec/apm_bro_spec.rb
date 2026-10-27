@@ -779,6 +779,20 @@ RSpec.describe DeadBro do
       expect(config.report_routing_errors).to be false
     end
 
+    it "turns middleware span recording off and on from the dashboard, never on over the app's own off" do
+      expect(config.middleware_spans_active?).to be true
+
+      config.apply_remote_settings("middleware_spans_enabled" => false)
+      expect(config.middleware_spans_active?).to be false
+      expect(config.middleware_spans_enabled).to be true
+
+      config.apply_remote_settings("middleware_spans_enabled" => true)
+      expect(config.middleware_spans_active?).to be true
+
+      config.middleware_spans_enabled = false
+      expect(config.middleware_spans_active?).to be false
+    end
+
     it "never enables EXPLAIN capture remotely — local opt-in required" do
       expect(config.explain_active?).to be false
 

@@ -38,6 +38,9 @@ module DeadBro
         DeadBro::SqlSubscriber.start_request_tracking
       end
 
+      # Start the span tree, measured from the same rack entry
+      DeadBro::SpanTracker.start_request(rack_entry) if defined?(DeadBro::SpanTracker)
+
       # Start cache tracking for this request
       if defined?(DeadBro::CacheSubscriber)
         DeadBro::CacheSubscriber.start_request_tracking
@@ -158,6 +161,9 @@ module DeadBro
     ensure
       Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
+      # Keeps the spans (and a payload held for the middleware chain) until
+      # the outermost middleware returns.
+      DeadBro::SpanTracker.stop_request if defined?(DeadBro::SpanTracker)
     end
 
     def parse_queue_start(env, rack_entry)

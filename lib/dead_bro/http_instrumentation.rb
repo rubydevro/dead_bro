@@ -8,6 +8,10 @@ module DeadBro
     EVENT_NAME = "outgoing.http"
     THREAD_LOCAL_KEY = :dead_bro_http_events
     MAX_TRACKED_EVENTS = 1000
+    # Set while DeadBro's Faraday middleware runs the request: the adapter's
+    # own Net::HTTP or Typhoeus call is that request, recorded once by the
+    # middleware.
+    IN_FARADAY_KEY = :dead_bro_http_in_faraday
 
     def self.install!(client: Client.new)
       install_net_http!(client)
@@ -50,7 +54,11 @@ module DeadBro
               tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
               start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
 
-              if is_es_host
+              if Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY]
+                # Faraday sent it through this adapter; DeadBro's Faraday
+                # middleware around the request records it.
+                nil
+              elsif is_es_host
                 # Route to elasticsearch subscriber instead of http_outgoing
                 if Thread.current[DeadBro::ElasticsearchSubscriber::THREAD_LOCAL_KEY]
                   path = (uri && uri.path) || req.path
@@ -75,6 +83,8 @@ module DeadBro
                   start_offset_ms: start_offset_ms,
                   exception: error && error.class.name
                 }
+                parent_id = DeadBro::SpanTracker.current_id
+                payload[:parent_id] = parent_id if parent_id
                 if Thread.current[THREAD_LOCAL_KEY] && DeadBro::HttpInstrumentation.should_continue_tracking?
                   Thread.current[THREAD_LOCAL_KEY] << payload
                 end
@@ -106,7 +116,9 @@ module DeadBro
                 (respond_to?(:base_url) ? base_url : nil)
               end
 
-              skip_instrumentation = req_url && (req_url.include?("localhost:3100/apm/v1/metrics") || req_url.include?("deadbro.aberatii.com/apm/v1/metrics"))
+              # Inside DeadBro's Faraday middleware, which records the request.
+              skip_instrumentation = Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY] ||
+                (req_url && (req_url.include?("localhost:3100/apm/v1/metrics") || req_url.include?("deadbro.aberatii.com/apm/v1/metrics")))
 
               unless skip_instrumentation
                 payload = {
@@ -116,6 +128,8 @@ module DeadBro
                   status: response && response.code,
                   duration_ms: duration_ms
                 }
+                parent_id = DeadBro::SpanTracker.current_id
+                payload[:parent_id] = parent_id if parent_id
                 if Thread.current[THREAD_LOCAL_KEY] && DeadBro::HttpInstrumentation.should_continue_tracking?
                   Thread.current[THREAD_LOCAL_KEY] << payload
                 end
@@ -137,10 +151,21 @@ module DeadBro
         middleware_klass = Class.new(::Faraday::Middleware) do
           def call(env)
             start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            wall_start = Time.now
             response = nil
+            error = nil
+            # A request this middleware leaves out (below) is left to the
+            # adapter's own Net::HTTP or Typhoeus hook, as before.
+            records = DeadBro::HttpInstrumentation.faraday_records?(env)
+            in_faraday = Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY]
+            Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY] = true if records
             begin
               response = @app.call(env)
+            rescue => e
+              error = e
+              raise
             ensure
+              Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY] = in_faraday
               finish_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
               duration_ms = ((finish_time - start_time) * 1000.0).round(2)
               begin
@@ -150,7 +175,9 @@ module DeadBro
                 url_str = url.to_s
 
                 is_es_host = DeadBro::HttpInstrumentation.elasticsearch_host?(host, port)
-                skip = !is_es_host && (url_str.include?("localhost") || url_str.include?("aberatii.com"))
+
+                tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
+                start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
 
                 if is_es_host
                   if Thread.current[DeadBro::ElasticsearchSubscriber::THREAD_LOCAL_KEY]
@@ -158,10 +185,11 @@ module DeadBro
                       method: env.method.to_s.upcase,
                       path: url.path,
                       status: response&.status,
-                      duration_ms: duration_ms
+                      duration_ms: duration_ms,
+                      start_offset_ms: start_offset_ms
                     )
                   end
-                elsif !skip
+                elsif records
                   lib = DeadBro::HttpInstrumentation.typesense_host?(host, port) ? "typesense" : "faraday"
                   payload = {
                     library: lib,
@@ -170,8 +198,12 @@ module DeadBro
                     host: host,
                     path: url.path,
                     status: response&.status,
-                    duration_ms: duration_ms
+                    duration_ms: duration_ms,
+                    start_offset_ms: start_offset_ms,
+                    exception: error&.class&.name
                   }
+                  parent_id = DeadBro::SpanTracker.current_id
+                  payload[:parent_id] = parent_id if parent_id
                   key = DeadBro::HttpInstrumentation::THREAD_LOCAL_KEY
                   if Thread.current[key] && DeadBro::HttpInstrumentation.should_continue_tracking?
                     Thread.current[key] << payload
@@ -200,6 +232,16 @@ module DeadBro
 
       ::Faraday::Connection.prepend(::DeadBro::FaradayInstrumentation) unless ::Faraday::Connection.ancestors.include?(::DeadBro::FaradayInstrumentation)
     rescue
+    end
+
+    # Whether DeadBro's Faraday middleware records the request: everything but
+    # localhost and DeadBro's own endpoint, Elasticsearch hosts always.
+    def self.faraday_records?(env)
+      url = env.url
+      url_str = url.to_s
+      elasticsearch_host?(url.host.to_s, url.port) || !(url_str.include?("localhost") || url_str.include?("aberatii.com"))
+    rescue *DeadBro::CONTAINED_ERRORS
+      false
     end
 
     def self.elasticsearch_host?(host, port)

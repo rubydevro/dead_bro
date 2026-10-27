@@ -130,7 +130,7 @@ module DeadBro
       end
 
       def build_event(method, path, status, duration_ms, start_offset_ms = nil)
-        {
+        event = {
           method: method.to_s.upcase,
           path: sanitize_path(path),
           operation: extract_operation(method, path),
@@ -138,6 +138,9 @@ module DeadBro
           duration_ms: duration_ms,
           start_offset_ms: start_offset_ms
         }
+        parent_id = DeadBro::SpanTracker.current_id
+        event[:parent_id] = parent_id if parent_id
+        event
       end
     end
   end

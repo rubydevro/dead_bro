@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [0.2.38] - 2026-10-26
+
+### Added
+- **Nested Request Trace.** Each request now sends its span tree as `spans`: the Rack middleware chain, the router, the controller action, view renders (layouts, templates, partials and collections), `DeadBro.watch` blocks, the block a `Rails.cache.fetch` miss runs, and SQL queries, each with an `id` and the id of the span it ran inside (`parent_id`). Repeated calls on the same path share one span with a `count`: a partial rendered 50 times from one template is one span, and the query it runs each time is one span under it. A span's `total_ms` is its calls' summed time with the spans nested in it included, and `start_ms` / `end_ms` are its first call's start and its last call's end. Cache, Redis, HTTP, Elasticsearch and transaction events carry the `parent_id` of the span they ran in, the cache event of a `Rails.cache.fetch` block and `DeadBro.watch` events the `span_id` of their span, and `sql_queries` entries the `id` their SQL spans refer to. DeadBro shows the tree with each span's total time and self time (total minus the spans nested in it). Up to 500 spans are kept per request; `spans_dropped` counts the ones left out. Background jobs don't send `spans`. An action that uses `ActionController::Live` runs on a thread of its own; its spans are recorded there, without the middleware chain.
+- **Middleware timing.** Each middleware of the app's Rails middleware stack and the router it ends in are timed as spans, so the trace shows the time each one spends before and after the app. The dashboard's middleware spans setting turns their recording off and on without a restart, and `config.middleware_spans_enabled = false` in an initializer leaves the middleware stack as Rails builds it, without the probes. Either way, the trace then starts at the controller action.
+
+### Changed
+- A request's payload is sent once the outermost middleware has returned instead of when the controller action finishes, so that the middleware spans are complete. If that middleware never returns through DeadBro's probe, for example when a timeout outside the Rails middleware stack raises into the thread at that moment, the payload is sent when the thread's next request comes in, and the next request's spans start afresh.
+
+### Fixed
+- **An HTTP request made through Faraday was recorded twice:** once by DeadBro's Faraday middleware and once by its `Net::HTTP` or Typhoeus hook underneath, so its time was counted twice. It is now recorded once, by the Faraday middleware, which also sends the request's start offset and exception class as the `Net::HTTP` hook does. Elasticsearch requests sent through Faraday are recorded once too. A request the Faraday middleware leaves out (one to localhost) is still left to the `Net::HTTP` or Typhoeus hook, as before.
+
 ## [0.2.37] - 2026-10-26
 
 ### Fixed

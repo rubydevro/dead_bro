@@ -156,11 +156,14 @@ module DeadBro
       tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
       start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
 
-      current << {
+      event = {
         event: name,
         duration_ms: ((finished - started) * 1000.0).round(2),
         start_offset_ms: start_offset_ms
       }
+      parent_id = DeadBro::SpanTracker.current_id
+      event[:parent_id] = parent_id if parent_id
+      current << event
     rescue
       nil
     end
@@ -251,7 +254,9 @@ module DeadBro
             agg[:n_plus_one]         = true if call_count >= N_PLUS_ONE_THRESHOLD
             agg[:backtrace]          = captured_trace if agg[:backtrace].empty? && !captured_trace.empty?
           else
-            aggregates_h[normalized_key] = {
+            agg = aggregates_h[normalized_key] = {
+              # What the request's span tree refers to this query by (ref).
+              id:                aggregates_h.size + 1,
               sql:               sanitized_sql,
               name:              data[:name],
               count:             1,
@@ -266,6 +271,7 @@ module DeadBro
               explain_plan:      nil
             }
           end
+          DeadBro::SpanTracker.sql(normalized_key, agg[:id], started, finished, agg_stack.length)
         end
 
         if should_continue_tracking?(current, MAX_TRACKED_QUERIES)

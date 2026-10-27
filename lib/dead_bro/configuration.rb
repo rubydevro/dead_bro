@@ -19,6 +19,14 @@ module DeadBro
     alias_method :explain_analyze_enabled, :explain_enabled
     alias_method :explain_analyze_enabled=, :explain_enabled=
 
+    # Middleware spans. false in the app's initializer leaves the middleware
+    # stack as Rails builds it, without a MiddlewareProbe around each
+    # middleware and the router, so the span tree starts at the controller
+    # action; it's read when Rails builds the stack, after the initializers.
+    # With the probes in place, the dashboard's setting of the same name turns
+    # their recording on and off (see #middleware_spans_active?).
+    attr_accessor :middleware_spans_enabled
+
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
       :sample_rate, :slow_query_threshold_ms, :watch_enabled,
@@ -73,7 +81,7 @@ module DeadBro
       explain_enabled slow_query_threshold_ms max_sql_queries_to_send max_logs_to_send
       watch_enabled excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
-      sample_rates_by_type report_routing_errors
+      sample_rates_by_type report_routing_errors middleware_spans_enabled
     ].freeze
 
     def initialize
@@ -89,6 +97,10 @@ module DeadBro
       @explicit_deploy_revision = nil
       @disk_paths = ["/"]
       @interfaces_ignore = %w[lo lo0 docker0]
+      @middleware_spans_enabled = true
+      # The dashboard's switch for recording middleware spans; on until a
+      # settings response says otherwise (older backends never send it).
+      @remote_middleware_spans_enabled = true
 
       # Remote-managed defaults (used until backend sends real values)
       @sample_rate = 100
@@ -193,6 +205,10 @@ module DeadBro
             # must never be able to switch it on — only off. The local opt-in
             # (explain_enabled) stays untouched; see #explain_active?
             @remote_explain_enabled = !!value
+          when "middleware_spans_enabled"
+            # The probes are already in place (or not) by now; this only turns
+            # their recording on and off. The local value stays as it was.
+            @remote_middleware_spans_enabled = !!value
           when "enabled", "memory_tracking_enabled", "allocation_tracking_enabled", "watch_enabled",
                "monitor_enabled", "enable_db_stats", "enable_process_stats", "enable_system_stats",
                "report_routing_errors"
@@ -210,6 +226,13 @@ module DeadBro
     # locally off means off no matter what the backend sends.
     def explain_active?
       !!(@explain_enabled && @remote_explain_enabled)
+    end
+
+    # Middleware spans are recorded when the app hasn't turned them off in its
+    # initializer (which also leaves the stack without probes) and the
+    # dashboard hasn't either.
+    def middleware_spans_active?
+      !!(@middleware_spans_enabled && @remote_middleware_spans_enabled)
     end
 
     alias_method :explain_analyze_active?, :explain_active?
