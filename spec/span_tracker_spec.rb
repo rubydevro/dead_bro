@@ -286,6 +286,44 @@ RSpec.describe DeadBro::SpanTracker do
     expect(current).to eq(held)
   end
 
+  it "records no middleware spans while the dashboard has them off, and again once it turns them back on" do
+    posted_during_session_commit = nil
+    app = rails_stack(router { sql("SELECT * FROM posts") }, session_after: -> { posted_during_session_commit = posted.size })
+
+    config.apply_remote_settings("middleware_spans_enabled" => false)
+    app.call({})
+
+    # Sent when the action finished, with nothing held for the chain.
+    expect(posted_during_session_commit).to eq(1)
+    expect(posted.last[:payload][:spans].map { |node| node[:kind] }).to contain_exactly("action", "sql")
+
+    config.apply_remote_settings("middleware_spans_enabled" => true)
+    app.call({})
+
+    expect(spans_of(posted.last[:payload]).keys).to include("ActionDispatch::HostAuthorization", "ActionDispatch::Routing::RouteSet")
+  end
+
+  it "sends what an abandoned request held even after the dashboard turned middleware spans off" do
+    abandoned = false
+    allow(described_class).to receive(:rack_leave).and_wrap_original do |original, frame|
+      if frame == 0 && !abandoned
+        abandoned = true
+        raise outer_timeout
+      end
+      original.call(frame)
+    end
+    app = rails_stack(router { sql("SELECT * FROM posts") })
+    expect { app.call({}) }.to raise_error(outer_timeout)
+
+    config.apply_remote_settings("middleware_spans_enabled" => false)
+    2.times { app.call({}) }
+
+    expect(posted.size).to eq(3)
+    held, *later = posted.map { |post| post[:payload][:spans].map { |node| node[:kind] } }
+    expect(held).to include("middleware", "action")
+    expect(later).to all(contain_exactly("action", "sql"))
+  end
+
   it "holds at most MAX_PENDING payloads for one middleware chain" do
     ctx = described_class.context
     ctx.start_rack

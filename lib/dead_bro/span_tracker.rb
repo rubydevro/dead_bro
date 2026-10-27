@@ -147,10 +147,12 @@ module DeadBro
       # Left over from a request whose outermost middleware never returned
       # through its probe — an exception raised into the thread from outside
       # the Rails stack (an outer timeout) while the probe opened or closed its
-      # frame: no frame is open, or the outermost probe is entered again while
-      # its own frame still is.
+      # frame: nothing is open or running, or the outermost probe is entered
+      # again while its own frame still is.
       def abandoned?(probe)
-        !idle? && (@rack_current.nil? || (@rack_current.zero? && @rack_probes[0].equal?(probe)))
+        return false if idle?
+
+        (@rack_current.nil? && @frames.empty?) || (@rack_current == 0 && @rack_probes[0].equal?(probe))
       end
 
       def current_id
@@ -499,17 +501,22 @@ module DeadBro
 
     # Returns a frame token for rack_leave, or nil when nothing is recorded.
     def rack_enter(probe)
-      return nil unless DeadBro.configuration.enabled
+      config = DeadBro.configuration
+      return nil unless config.enabled
 
-      ctx = context
-      if ctx.abandoned?(probe)
-        # Send what the abandoned request held, and start over.
+      ctx = own_context
+      if ctx&.abandoned?(probe)
+        # Send what the abandoned request held, and start over — also while
+        # the dashboard has middleware spans off, so it doesn't linger.
         begin
           flush(ctx)
         ensure
           ctx.reset
         end
       end
+      return nil unless config.middleware_spans_active?
+
+      ctx ||= context
       if ctx.idle?
         ctx.reset
         ctx.start_rack
