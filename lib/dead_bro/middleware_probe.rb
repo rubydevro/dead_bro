@@ -38,6 +38,8 @@ module DeadBro
     # ActionDispatch::MiddlewareStack::Middleware#build: one probe per middleware.
     module MiddlewareBuild
       def build(app)
+        return super unless MiddlewareProbe.enabled?
+
         MiddlewareProbe.wrap(super, inspect, SpanTracker::MIDDLEWARE)
       end
     end
@@ -48,10 +50,17 @@ module DeadBro
     module StackBuild
       def build(app = nil, &block)
         endpoint = app || block
-        return super if endpoint.nil?
+        return super if endpoint.nil? || !MiddlewareProbe.enabled?
 
         super(MiddlewareProbe.wrap(endpoint, endpoint.class.name, SpanTracker::ENDPOINT))
       end
+    end
+
+    # config.middleware_spans_enabled, read when Rails builds the stack.
+    def self.enabled?
+      DeadBro.configuration.middleware_spans_enabled ? true : false
+    rescue
+      true
     end
 
     def self.wrap(app, name, kind)

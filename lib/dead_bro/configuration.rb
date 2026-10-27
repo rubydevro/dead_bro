@@ -19,6 +19,12 @@ module DeadBro
     alias_method :explain_analyze_enabled, :explain_enabled
     alias_method :explain_analyze_enabled=, :explain_enabled=
 
+    # Local-only: false leaves the app's middleware stack as Rails builds it,
+    # without a MiddlewareProbe around each middleware and the router, so the
+    # span tree starts at the controller action. Read when Rails builds the
+    # stack, after the app's initializers have run.
+    attr_accessor :middleware_spans_enabled
+
     # Remote-managed settings (overwritten by backend JSON `settings` on successful API responses)
     attr_accessor :memory_tracking_enabled, :allocation_tracking_enabled, :allocation_sample_rate,
       :sample_rate, :slow_query_threshold_ms, :watch_enabled,
@@ -89,6 +95,7 @@ module DeadBro
       @explicit_deploy_revision = nil
       @disk_paths = ["/"]
       @interfaces_ignore = %w[lo lo0 docker0]
+      @middleware_spans_enabled = true
 
       # Remote-managed defaults (used until backend sends real values)
       @sample_rate = 100

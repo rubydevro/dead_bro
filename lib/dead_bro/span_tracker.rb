@@ -25,7 +25,9 @@ module DeadBro
   #
   # The middleware chain returns after the controller action has finished, so
   # a request that runs inside it has its payload held until the outermost
-  # middleware returns (see .post), and is sent with the middleware spans.
+  # middleware returns (see .post), and is sent with the middleware spans. If
+  # that middleware never returns through its probe, the payload is sent when
+  # the thread's next request comes in (see .rack_enter).
   #
   # The tree belongs to the thread that runs the request. ActionController::Live
   # runs the action on a thread of its own, with the request thread's locals
@@ -39,6 +41,10 @@ module DeadBro
     MAX_NODES = 500
     # Middleware/router frames kept per request (a Rails stack has ~25).
     MAX_RACK_FRAMES = 200
+    # Payloads held for one middleware chain: the request's own, and the
+    # exceptions app's when Rails dispatches an error to it. Past this a
+    # payload is sent right away.
+    MAX_PENDING = 10
 
     MIDDLEWARE = "middleware"
     ENDPOINT = "endpoint"
@@ -136,6 +142,15 @@ module DeadBro
 
       def idle?
         @frames.empty? && @pending.nil? && !rack_open?
+      end
+
+      # Left over from a request whose outermost middleware never returned
+      # through its probe — an exception raised into the thread from outside
+      # the Rails stack (an outer timeout) while the probe opened or closed its
+      # frame: no frame is open, or the outermost probe is entered again while
+      # its own frame still is.
+      def abandoned?(probe)
+        !idle? && (@rack_current.nil? || (@rack_current.zero? && @rack_probes[0].equal?(probe)))
       end
 
       def current_id
@@ -271,7 +286,7 @@ module DeadBro
         @nodes.each { |node| node[:total_ms] = node[:total_ms].round(3) }
         @rack_probes.each_with_index do |probe, i|
           start = @rack_starts[i]
-          finish = @rack_ends[i] || start
+          finish = @rack_ends[i] || open_frame_end(start)
           parent = @rack_parents[i]
           @nodes << {
             id: i + 1,
@@ -358,6 +373,14 @@ module DeadBro
 
       def offset_ms(time)
         ((time - @base) * 1000.0).round(3)
+      end
+
+      # A frame sent while still open (its middleware never returned through
+      # the probe) ends where the last frame that did close ended.
+      def open_frame_end(start)
+        finish = start
+        @rack_ends.each { |time| finish = time if time && time > finish }
+        finish
       end
     end
 
@@ -479,6 +502,14 @@ module DeadBro
       return nil unless DeadBro.configuration.enabled
 
       ctx = context
+      if ctx.abandoned?(probe)
+        # Send what the abandoned request held, and start over.
+        begin
+          flush(ctx)
+        ensure
+          ctx.reset
+        end
+      end
       if ctx.idle?
         ctx.reset
         ctx.start_rack
@@ -590,7 +621,7 @@ module DeadBro
     # the middleware spans closed.
     def post(client, event_name, payload, action_name)
       ctx = own_context
-      if ctx&.rack_open?
+      if ctx&.rack_open? && (ctx.pending.nil? || ctx.pending.size < MAX_PENDING)
         (ctx.pending ||= []) << [client, event_name, payload, action_name]
       else
         ctx&.finalize(action_name)

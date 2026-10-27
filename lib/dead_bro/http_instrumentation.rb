@@ -154,8 +154,11 @@ module DeadBro
             wall_start = Time.now
             response = nil
             error = nil
+            # A request this middleware leaves out (below) is left to the
+            # adapter's own Net::HTTP or Typhoeus hook, as before.
+            records = DeadBro::HttpInstrumentation.faraday_records?(env)
             in_faraday = Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY]
-            Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY] = true
+            Thread.current[DeadBro::HttpInstrumentation::IN_FARADAY_KEY] = true if records
             begin
               response = @app.call(env)
             rescue => e
@@ -172,7 +175,6 @@ module DeadBro
                 url_str = url.to_s
 
                 is_es_host = DeadBro::HttpInstrumentation.elasticsearch_host?(host, port)
-                skip = !is_es_host && (url_str.include?("localhost") || url_str.include?("aberatii.com"))
 
                 tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
                 start_offset_ms = tracking_start ? ((wall_start - tracking_start) * 1000.0).round(2) : nil
@@ -187,7 +189,7 @@ module DeadBro
                       start_offset_ms: start_offset_ms
                     )
                   end
-                elsif !skip
+                elsif records
                   lib = DeadBro::HttpInstrumentation.typesense_host?(host, port) ? "typesense" : "faraday"
                   payload = {
                     library: lib,
@@ -230,6 +232,16 @@ module DeadBro
 
       ::Faraday::Connection.prepend(::DeadBro::FaradayInstrumentation) unless ::Faraday::Connection.ancestors.include?(::DeadBro::FaradayInstrumentation)
     rescue
+    end
+
+    # Whether DeadBro's Faraday middleware records the request: everything but
+    # localhost and DeadBro's own endpoint, Elasticsearch hosts always.
+    def self.faraday_records?(env)
+      url = env.url
+      url_str = url.to_s
+      elasticsearch_host?(url.host.to_s, url.port) || !(url_str.include?("localhost") || url_str.include?("aberatii.com"))
+    rescue *DeadBro::CONTAINED_ERRORS
+      false
     end
 
     def self.elasticsearch_host?(host, port)

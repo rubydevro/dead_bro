@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rack"
+require "timeout"
 require "spec_helper"
 require "dead_bro/sql_tracking_middleware"
 
@@ -226,6 +227,74 @@ RSpec.describe DeadBro::SpanTracker do
     kinds = posted.first[:payload][:spans].map { |node| node[:kind] }
     expect(kinds).to contain_exactly("action", "sql")
     expect(spans_of(posted.first[:payload]).fetch("PostsController#index")[:parent_id]).to be_nil
+  end
+
+  # What an exception raised into the thread from outside the Rails stack (an
+  # outer timeout: an Exception, not a StandardError) does when it lands while
+  # the outermost probe closes its frame.
+  let(:outer_timeout) { Class.new(Timeout::ExitException) }
+
+  def span_shapes(post)
+    post[:payload][:spans].map { |node| [node[:id], node[:parent_id], node[:kind]] }
+  end
+
+  it "sends what a request held when its outermost frame never closed, once the next request comes in" do
+    abandoned = false
+    allow(described_class).to receive(:rack_leave).and_wrap_original do |original, frame|
+      if frame == 0 && !abandoned
+        # Lands before the outermost frame is closed.
+        abandoned = true
+        raise outer_timeout
+      end
+      original.call(frame)
+    end
+    app = rails_stack(router { sql("SELECT * FROM posts") })
+
+    expect { app.call({}) }.to raise_error(outer_timeout)
+    expect(posted).to be_empty
+
+    app.call({})
+
+    expect(posted.size).to eq(2)
+    held, current = posted.map { |post| span_shapes(post) }
+    expect(held.map(&:last)).to include("action", "sql")
+    expect(current).to eq(held)
+    # The frame that never closed ends where the last one that did.
+    nodes = spans_of(posted.first[:payload])
+    expect(nodes.fetch("ActionDispatch::HostAuthorization")[:end_ms]).to eq(nodes.fetch("ActionDispatch::Session::CookieStore")[:end_ms])
+  end
+
+  it "sends what a request held when the exception landed after its outermost frame closed" do
+    abandoned = false
+    allow_any_instance_of(described_class::Context).to receive(:rack_leave).and_wrap_original do |original, frame, now|
+      original.call(frame, now)
+      if frame == 0 && !abandoned
+        # Lands after the frame is closed, before what it held is sent.
+        abandoned = true
+        raise outer_timeout
+      end
+    end
+    app = rails_stack(router { sql("SELECT * FROM posts") })
+
+    expect { app.call({}) }.to raise_error(outer_timeout)
+    expect(posted).to be_empty
+
+    app.call({})
+
+    expect(posted.size).to eq(2)
+    held, current = posted.map { |post| span_shapes(post) }
+    expect(current).to eq(held)
+  end
+
+  it "holds at most MAX_PENDING payloads for one middleware chain" do
+    ctx = described_class.context
+    ctx.start_rack
+    ctx.rack_enter(:outermost_probe, described_class.now)
+
+    (described_class::MAX_PENDING + 2).times { |i| described_class.post(client, "event", {n: i}, "PostsController#index") }
+
+    expect(ctx.pending.size).to eq(described_class::MAX_PENDING)
+    expect(posted.map { |post| post[:payload][:n] }).to eq([described_class::MAX_PENDING, described_class::MAX_PENDING + 1])
   end
 
   it "starts the next request's tree from scratch when a request isn't sent" do
@@ -460,5 +529,37 @@ RSpec.describe DeadBro::MiddlewareProbe do
     end
     expect(names).to eq(%w[RequestIdStub CookiesStub Proc])
     expect(app.call({})).to eq([200, {}, ["ok"]])
+  end
+
+  # Stand-ins for ActionDispatch::MiddlewareStack and its Middleware entries,
+  # whose #build the probes hook into.
+  it "leaves the middleware stack as Rails builds it when middleware spans are off" do
+    stack_class = Class.new do
+      def build(app = nil, &block)
+        app || block
+      end
+    end
+    stack_class.prepend(described_class::StackBuild)
+    middleware_class = Class.new do
+      def build(app)
+        [:middleware, app]
+      end
+
+      def inspect
+        "RequestIdStub"
+      end
+    end
+    middleware_class.prepend(described_class::MiddlewareBuild)
+    endpoint = ->(_env) { [200, {}, ["ok"]] }
+
+    DeadBro.configuration.middleware_spans_enabled = false
+    expect(stack_class.new.build(endpoint)).to equal(endpoint)
+    expect(middleware_class.new.build(endpoint)).to eq([:middleware, endpoint])
+
+    DeadBro.configuration.middleware_spans_enabled = true
+    expect(stack_class.new.build(endpoint)).to be_a(described_class).and have_attributes(span_name: "Proc")
+    expect(middleware_class.new.build(endpoint)).to be_a(described_class).and have_attributes(span_name: "RequestIdStub")
+  ensure
+    DeadBro.configuration.middleware_spans_enabled = true
   end
 end

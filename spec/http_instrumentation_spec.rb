@@ -137,6 +137,38 @@ RSpec.describe DeadBro::HttpInstrumentation do
       expect(events.first[:start_offset_ms]).to be_a(Float)
       expect(Thread.current[described_class::IN_FARADAY_KEY]).to be_nil
     end
+
+    # The Faraday middleware leaves out localhost; Typhoeus's hook records it,
+    # so a request sent through that adapter must still reach the hook.
+    it "leaves a request it doesn't record to the adapter's own hook" do
+      typhoeus_request = Class.new do
+        attr_reader :url, :options
+
+        def initialize(url)
+          @url = url
+          @options = {method: :get}
+        end
+
+        def run
+          Struct.new(:code).new(200)
+        end
+      end
+      stub_const("Typhoeus", Module.new.tap { |typhoeus| typhoeus.const_set(:Request, typhoeus_request) })
+      described_class.install_typhoeus!(DeadBro.client)
+      described_class.install_faraday!(DeadBro.client)
+      env_class = Struct.new(:url, :method)
+      typhoeus_adapter = lambda do |env|
+        Struct.new(:status).new(Typhoeus::Request.new(env.url.to_s).run.code)
+      end
+
+      %w[localhost 127.0.0.1].each do |host|
+        DeadBro::FaradayMiddleware.new(typhoeus_adapter).call(env_class.new(URI("http://#{host}:8080/rates"), :get))
+      end
+
+      events = Thread.current[:dead_bro_http_events]
+      expect(events.map { |event| [event[:library], event[:url]] })
+        .to eq([["typhoeus", "http://localhost:8080/rates"], ["faraday", "http://127.0.0.1:8080/rates"]])
+    end
   end
 
   def install_net_http_hook

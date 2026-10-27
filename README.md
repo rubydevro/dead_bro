@@ -130,6 +130,8 @@ Each web request carries its span tree as `spans`, which DeadBro shows as a nest
 
 Middleware is timed by a probe Rails places around each middleware when it builds the middleware stack. The middleware stack returns after the controller action has finished, so a request's payload is sent once the outermost middleware has returned. An action that uses `ActionController::Live` runs on a thread of its own, and its spans are recorded there, without the middleware chain. Background jobs don't send `spans`.
 
+To leave the middleware stack as Rails builds it, without the probes, set `config.middleware_spans_enabled = false` (default `true`). The trace then starts at the controller action, and a request's payload is sent when the action finishes. The setting is read when Rails builds the middleware stack, after the app's initializers have run, so set it in `config/initializers/dead_bro.rb`; a change takes effect when the app restarts.
+
 ## Memory Tracking & Leak Detection
 
 DeadBro automatically tracks memory usage and detects memory leaks with minimal performance impact. This includes:
