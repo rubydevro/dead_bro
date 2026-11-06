@@ -50,6 +50,8 @@ module DeadBro
 
     def build_payload(exception, env, started)
       req = rack_request(env)
+      # The app's filter_parameters: Rails puts them in every request's env.
+      filter = DeadBro.parameter_filter(env["action_dispatch.parameter_filter"])
 
       payload = {
         exception_class: exception.class.name,
@@ -67,12 +69,12 @@ module DeadBro
           {
             method: req&.request_method,
             path: req&.path,
-            fullpath: req&.fullpath,
+            fullpath: filtered_fullpath(req, filter),
             ip: req&.ip,
             user_agent: truncate(req&.user_agent.to_s, 200),
-            params: safe_params(req),
+            params: safe_params(req, filter),
             request_id: env["action_dispatch.request_id"] || env["HTTP_X_REQUEST_ID"],
-            referer: truncate(env["HTTP_REFERER"].to_s, 500),
+            referer: truncate(filtered_referer(env, filter), 500),
             host: env["HTTP_HOST"]
           },
         rails_env: DeadBro.env,
@@ -115,29 +117,28 @@ module DeadBro
       []
     end
 
-    def safe_params(req)
+    def safe_params(req, filter)
       return {} unless req
 
-      params = req.params || {}
+      params = DeadBro::Sanitizer.deep(req.params || {})
       # Redact at every nesting level (e.g. user[password]) before serializing.
-      JSON.parse(JSON.dump(DeadBro::Sanitizer.deep(redact_sensitive(params))))
+      JSON.parse(JSON.dump(DeadBro::Subscriber.redact_sensitive(params, filter)))
     rescue
       {}
     end
 
-    def redact_sensitive(value)
-      case value
-      when Hash
-        value.each_with_object({}) do |(k, v), memo|
-          # Scrubbed first: the sensitive-key regex raises on a key that isn't valid UTF-8.
-          k = DeadBro::Sanitizer.string(k) if k.is_a?(String)
-          memo[k] = DeadBro::Subscriber.sensitive_key?(k) ? "[FILTERED]" : redact_sensitive(v)
-        end
-      when Array
-        value.map { |v| redact_sensitive(v) }
-      else
-        value
-      end
+    # req.fullpath with its query string filtered like the params.
+    def filtered_fullpath(req, filter)
+      DeadBro::Subscriber.filter_url(req.fullpath, filter) if req
+    rescue
+      nil # Never the query string unfiltered.
+    end
+
+    # The page the request came from is usually one of the app's too.
+    def filtered_referer(env, filter)
+      DeadBro::Subscriber.filter_url(env["HTTP_REFERER"], filter)
+    rescue
+      ""
     end
 
     def truncate(str, max)

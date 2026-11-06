@@ -73,11 +73,17 @@ module DeadBro
       nil
     end
 
+    # Whether post_monitor_stats would send stats now. The monitor asks before
+    # collecting them, as collecting queries the job backend and the database.
+    def monitor_stats_wanted?
+      !@configuration.api_key.nil? &&
+        !!@configuration.enabled &&
+        !@configuration.skip_tracking? &&
+        !!@configuration.monitor_enabled
+    end
+
     def post_monitor_stats(payload)
-      return if @configuration.api_key.nil?
-      return unless @configuration.enabled
-      return if @configuration.skip_tracking?
-      return unless @configuration.monitor_enabled
+      return unless monitor_stats_wanted?
       return if circuit_open?
 
       body = {payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}

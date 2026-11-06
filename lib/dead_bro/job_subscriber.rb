@@ -10,6 +10,10 @@ module DeadBro
   class JobSubscriber
     JOB_EVENT_NAME = "perform.active_job"
 
+    # Keys whose values job arguments hide whatever the app's filter_parameters
+    # say: the ones request params hide, and a bare "key", as from the start.
+    SENSITIVE_ARGUMENT_RE = Regexp.union(DeadBro::Subscriber::SENSITIVE_SEGMENT_RE, /\Akey\z/i)
+
     def self.subscribe!(client: Client.new)
       # Snap GC state before the job runs so stop_request_tracking gets a valid diff
       ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, _data|
@@ -132,7 +136,7 @@ module DeadBro
           job_class: data[:job].class.name,
           job_id: data[:job].job_id,
           queue_name: data[:job].queue_name,
-          arguments: safe_arguments(data[:job].arguments),
+          arguments: job_arguments(data[:job]),
           started_at: started.utc.iso8601(3),
           duration_ms: duration_ms,
           queue_duration_ms: queue_duration_ms,
@@ -250,6 +254,21 @@ module DeadBro
       nil
     end
 
+    # A job class that keeps its arguments out of the app's logs
+    # (log_arguments = false) keeps them out of DeadBro too: each is sent as
+    # "[FILTERED]", so only their number shows.
+    def self.job_arguments(job)
+      arguments = job.arguments
+      job_class = job.class
+      if job_class.respond_to?(:log_arguments?) && !job_class.log_arguments?
+        return arguments.is_a?(Array) ? arguments.first(10).map { "[FILTERED]" } : []
+      end
+
+      safe_arguments(arguments)
+    rescue
+      []
+    end
+
     private
 
     def self.job_queue_duration_ms(job, perform_started)
@@ -266,6 +285,11 @@ module DeadBro
     def self.safe_arguments(arguments)
       return [] unless arguments.is_a?(Array)
 
+      # Hashes, also inside arrays, hide the values of sensitive keys at any
+      # depth: the keys the app's filter_parameters name, as in its own logs,
+      # and SENSITIVE_ARGUMENT_RE.
+      filter = DeadBro.parameter_filter
+
       # Limit and sanitize job arguments. Strings are scrubbed to valid UTF-8 here
       # so one binary argument doesn't send the payload down the client's slow retry path.
       arguments.first(10).map do |arg|
@@ -274,22 +298,25 @@ module DeadBro
           str = DeadBro::Sanitizer.string(arg)
           (str.length > 200) ? str[0, 200] + "..." : str
         when Hash
-          # Filter sensitive keys and limit size
-          filtered = arg.reject { |k, _| %w[password token secret key].include?(k.to_s) }
-          DeadBro::Sanitizer.deep((filtered.keys.size > 20) ? filtered.first(20).to_h : filtered)
+          limited = (arg.size > 20) ? arg.first(20).to_h : arg
+          DeadBro::Subscriber.redact_sensitive(DeadBro::Sanitizer.deep(limited), filter, pattern: SENSITIVE_ARGUMENT_RE)
         when Array
-          DeadBro::Sanitizer.deep(arg.first(5))
-        when ActiveRecord::Base
-          # Handle ActiveRecord objects safely
-          "#{arg.class.name}##{begin
-            arg.id
-          rescue
-            "unknown"
-          end}"
+          DeadBro::Subscriber.redact_sensitive(DeadBro::Sanitizer.deep(arg.first(5)), filter, pattern: SENSITIVE_ARGUMENT_RE)
         else
-          # Convert to string and truncate, but avoid object inspection
-          str = DeadBro::Sanitizer.string(arg)
-          (str.length > 200) ? str[0, 200] + "..." : str
+          # Checked here rather than in a `when`: in an app without
+          # ActiveRecord the constant raised and every argument was lost.
+          if defined?(::ActiveRecord::Base) && arg.is_a?(::ActiveRecord::Base)
+            # Handle ActiveRecord objects safely
+            "#{arg.class.name}##{begin
+              arg.id
+            rescue
+              "unknown"
+            end}"
+          else
+            # Convert to string and truncate, but avoid object inspection
+            str = DeadBro::Sanitizer.string(arg)
+            (str.length > 200) ? str[0, 200] + "..." : str
+          end
         end
       end
     rescue
