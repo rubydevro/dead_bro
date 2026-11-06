@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "uri"
 require "active_support/notifications"
 
 module DeadBro
@@ -318,11 +319,19 @@ module DeadBro
       # Best effort — without the flag ErrorMiddleware reports the exception too.
     end
 
+    # The request's path, with the query string filtered the way its params
+    # are: the app's filter_parameters, then DeadBro's own list on top.
     def self.safe_path(data)
-      path = data[:path] || (data[:request] && data[:request].path)
-      sanitize_string(path)
+      request = data[:request]
+      # Filtered with the app's filter_parameters. Rails 7.1+ puts the same in
+      # the payload; 6.1 and 7.0 put the raw request.fullpath there.
+      return filter_url(request.filtered_path) if request.respond_to?(:filtered_path)
+
+      # Rails 6.0 doesn't pass the request: its raw fullpath gets the app's
+      # list here.
+      filter_url(data[:path] || request&.path, DeadBro.parameter_filter)
     rescue
-      ""
+      "" # Never the query string unfiltered.
     end
 
     def self.safe_params(data)
@@ -359,11 +368,80 @@ module DeadBro
     # bracket) so nested and prefixed/suffixed keys are caught — e.g. user[password],
     # access_token, client_secret — without redacting innocent keys like
     # passenger_count or cardinality.
-    SENSITIVE_SEGMENT_RE = /(?:\A|[_\-\[])(password|passwd|secret|token|api_?key|access_?key|auth|authorization|credential|ssn|credit_?card|card_?number|cvv|cvc)(?:\z|[_\-\]])/i
+    SENSITIVE_WORDS = "password|passwd|secret|token|api_?key|access_?key|auth|authorization|credential|ssn|credit_?card|card_?number|cvv|cvc"
+    SENSITIVE_SEGMENT_RE = /(?:\A|[_\-\[])(#{SENSITIVE_WORDS})(?:\z|[_\-\]])/i
+    # The same words anywhere in a string: one cheap match tells that a query
+    # string names nothing sensitive.
+    SENSITIVE_WORD_RE = /#{SENSITIVE_WORDS}/i
 
     def self.sensitive_key?(key)
       SENSITIVE_SEGMENT_RE.match?(key.to_s)
     end
+
+    # A copy of value in which every value stored under a sensitive key is
+    # "[FILTERED]", at any depth: a key pattern matches (by default the keys
+    # sensitive_key? matches) or, given filter (see DeadBro.parameter_filter),
+    # a key the app's filter_parameters name. With a filter, pass value through
+    # Sanitizer.deep first: its patterns raise on a key that isn't valid UTF-8.
+    def self.redact_sensitive(value, filter = nil, pattern: SENSITIVE_SEGMENT_RE)
+      case value
+      when Hash
+        # The filter takes the whole hash, levels below included, so that a
+        # nested filter ("user.email") sees the full key.
+        value = filter.filter(value) if filter
+        value.each_with_object({}) do |(k, v), memo|
+          # Scrubbed first: the pattern raises on a key that isn't valid UTF-8.
+          k = sanitize_string(k) if k.is_a?(String)
+          memo[k] = pattern.match?(k.to_s) ? "[FILTERED]" : redact_sensitive(v, pattern: pattern)
+        end
+      when Array
+        value.map { |v| redact_sensitive(v, filter, pattern: pattern) }
+      else
+        value
+      end
+    end
+
+    # url (a path or a full URL) with its query string filtered: each
+    # name=value pair whose name is sensitive gets "[FILTERED]" as its value,
+    # the rest is kept as it was sent. Sensitive are the names sensitive_key?
+    # matches and, given filter (see DeadBro.parameter_filter), the ones the
+    # app's filter_parameters name, which is what Rails' request.filtered_path
+    # does.
+    def self.filter_url(url, filter = nil)
+      url = sanitize_string(url)
+      return url unless url.include?("?")
+
+      base, query = url.split("?", 2)
+      # This runs on every request with a query string, and most have none of
+      # the words in them. Names are matched as sent here: a word spelled with
+      # %-encoded letters, which browsers don't send, isn't caught.
+      return url if filter.nil? && !SENSITIVE_WORD_RE.match?(query)
+
+      pairs = query.split(/([&;])/).map do |part|
+        name, value = part.split("=", 2)
+        next part if value.nil?
+
+        key = query_param_name(name)
+        if sensitive_key?(key)
+          "#{name}=[FILTERED]"
+        elsif filter
+          "#{name}=#{filter.filter(key => value)[key]}"
+        else
+          part
+        end
+      end
+      "#{base}?#{pairs.join}"
+    end
+
+    # The param name as Rails sees it: user%5Bemail%5D is user[email].
+    def self.query_param_name(name)
+      return name unless name.include?("%") || name.include?("+")
+
+      sanitize_string(URI.decode_www_form_component(name))
+    rescue ArgumentError
+      name # Not valid %-encoding: matched as sent.
+    end
+    private_class_method :query_param_name
 
     # Recursively truncate values to reasonable sizes to avoid huge payloads, and
     # redact values whose key looks sensitive at any nesting level.

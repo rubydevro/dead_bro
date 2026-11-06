@@ -113,3 +113,44 @@ RSpec.describe DeadBro::Client, "#post_monitor_stats" do
     expect(cb.state).to eq(:closed)
   end
 end
+
+# The monitor asks before collecting: collecting queries the job backend and
+# the database, which is wasted when post_monitor_stats would drop the result.
+RSpec.describe DeadBro::Client, "#monitor_stats_wanted?" do
+  let(:config) do
+    DeadBro::Configuration.new.tap do |c|
+      c.api_key = "test_key"
+      c.monitor_enabled = true
+    end
+  end
+
+  let(:client) { described_class.new(config) }
+
+  it "is true with an API key and the monitor on" do
+    expect(client.monitor_stats_wanted?).to be(true)
+  end
+
+  it "is false without an API key" do
+    config.api_key = nil
+
+    expect(client.monitor_stats_wanted?).to be(false)
+  end
+
+  it "is false until the app's settings turn the monitor on" do
+    config.monitor_enabled = DeadBro::Configuration.new.monitor_enabled
+
+    expect(client.monitor_stats_wanted?).to be(false)
+  end
+
+  it "is false when disabled" do
+    config.enabled = false
+
+    expect(client.monitor_stats_wanted?).to be(false)
+  end
+
+  it "is false while tracking is skipped after a 507" do
+    config.skip_until = Time.now.utc + 600
+
+    expect(client.monitor_stats_wanted?).to be(false)
+  end
+end

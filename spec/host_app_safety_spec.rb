@@ -268,11 +268,14 @@ RSpec.describe "DeadBro never raising into the host app" do
     end
 
     it "keeps params, still redacted, when a key isn't valid UTF-8" do
-      bad_key = "na\xA1me".dup.force_encoding(Encoding::UTF_8)
+      env = Rack::MockRequest.env_for("/pages?na%A1me=x&password=secret")
 
-      redacted = described_class.new(app, client).send(:redact_sensitive, {bad_key => "x", "password" => "secret"})
+      expect { described_class.new(app, client).call(env) }.to raise_error(error)
 
-      expect(redacted).to eq("na�me" => "x", "password" => "[FILTERED]")
+      expect(posted.first["payload"]["rack"]).to include(
+        "params" => {"na�me" => "x", "password" => "[FILTERED]"},
+        "fullpath" => "/pages?na%A1me=x&password=[FILTERED]"
+      )
     end
   end
 

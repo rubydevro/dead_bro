@@ -38,7 +38,13 @@ module DeadBro
           break unless @running
 
           begin
-            collect_and_send_stats
+            # Only when the client would send the stats: with no API key
+            # (development, tests, rake tasks such as assets:precompile), the
+            # monitor off in the app's settings (the default) or tracking
+            # disabled, collecting would query the job backend and the
+            # database every minute for nothing. The thread keeps running, so
+            # a key set later or the monitor turned on takes effect.
+            collect_and_send_stats if @client.monitor_stats_wanted?
           rescue => e
             log_error("Error collecting stats: #{e.message}")
           end

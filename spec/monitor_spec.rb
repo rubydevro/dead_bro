@@ -13,6 +13,24 @@ RSpec.describe DeadBro::Monitor do
     DeadBro.configuration.enabled = true
     DeadBro.configuration.api_key = "test-api-key"
     allow(client).to receive(:post_heartbeat)
+    allow(client).to receive(:monitor_stats_wanted?).and_return(true)
+  end
+
+  # Runs the monitor until its first tick has asked the client whether the
+  # stats would be sent (the stub pushes to asked), then stops it: stop waits
+  # for the tick to finish.
+  def run_first_tick(monitor, asked)
+    monitor.start
+    Timeout.timeout(2) { asked.pop }
+  ensure
+    monitor.stop
+  end
+
+  def answer_monitor_stats_wanted(client, wanted, asked)
+    allow(client).to receive(:monitor_stats_wanted?) do
+      asked << true
+      wanted
+    end
   end
 
   after do
@@ -98,6 +116,45 @@ RSpec.describe DeadBro::Monitor do
       monitor.start
       sleep(0.1)
       monitor.stop
+    end
+
+    # Collecting queries the job backend and the database, and saves samples
+    # to Redis and /tmp: wasted when the client drops the result.
+    it "doesn't collect stats the client wouldn't send" do
+      asked = Queue.new
+      answer_monitor_stats_wanted(client, false, asked)
+      allow(monitor).to receive(:collect_and_send_stats)
+
+      run_first_tick(monitor, asked)
+
+      expect(monitor).not_to have_received(:collect_and_send_stats)
+    end
+
+    it "collects and sends stats the client would send" do
+      asked = Queue.new
+      answer_monitor_stats_wanted(client, true, asked)
+      allow(monitor).to receive(:collect_and_send_stats)
+
+      run_first_tick(monitor, asked)
+
+      expect(monitor).to have_received(:collect_and_send_stats)
+    end
+
+    # assets:precompile in a Docker build without credentials: with eager_load
+    # off, the SolidQueue query of the first tick loaded ActiveRecord before
+    # the app had finished booting, and Rails warned about it.
+    it "doesn't query the job backend without an API key" do
+      DeadBro.configuration.api_key = nil
+      keyless_client = DeadBro::Client.new(DeadBro.configuration)
+      asked = Queue.new
+      allow(keyless_client).to receive(:monitor_stats_wanted?).and_wrap_original do |original|
+        original.call.tap { asked << true }
+      end
+      allow(DeadBro::Collectors::Jobs).to receive(:collect)
+
+      run_first_tick(described_class.new(client: keyless_client), asked)
+
+      expect(DeadBro::Collectors::Jobs).not_to have_received(:collect)
     end
 
     it "handles errors gracefully in the thread" do

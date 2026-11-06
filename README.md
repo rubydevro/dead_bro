@@ -158,7 +158,7 @@ DeadBro automatically tracks ActiveJob background jobs when ActiveJob is availab
 - `job_class` - The job class name (e.g., "UserMailer::WelcomeEmail")
 - `job_id` - Unique job identifier
 - `queue_name` - The queue the job was processed from
-- `arguments` - Sanitized job arguments (sensitive data filtered)
+- `arguments` - The job's arguments (up to 10). In hash arguments, at any depth, the value of a key named in the app's `config.filter_parameters` or in DeadBro's own list (`password`, `token`, `secret`, `api_key`, ...) is sent as `"[FILTERED]"`. A job class with `self.log_arguments = false` sends each argument as `"[FILTERED]"`.
 - `duration_ms` - Job execution time in milliseconds
 - `status` - "completed" or "failed"
 - `sql_queries` - Array of SQL queries executed during the job
@@ -177,6 +177,7 @@ DeadBro includes a lightweight **control plane metrics** job that runs periodica
 
 Everything is **best effort** and designed to be **safe and low overhead**:
 
+- Nothing is collected without an API key or while the monitor is off in the app's settings, so development, test and rake processes don't query the job backend or the database for it.
 - Collection never raises; failures are reported as `{error_class, error_message}` under the respective section key.
 - No sensitive data is sent (no job arguments, env vars, CLI args, or full SQL text in these control-plane metrics).
 - CPU and network *rates* require two samples; on the first run you may see `nil` for `cpu_pct` or network `*_bytes_per_s` fields until a second sample is available.

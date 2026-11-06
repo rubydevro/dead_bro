@@ -594,8 +594,7 @@ RSpec.describe DeadBro do
 
       expect(sanitized[0]).to eq("normal_string")
       expect(sanitized[1]).to end_with("...")
-      expect(sanitized[2]).not_to have_key(:password)
-      expect(sanitized[2]).to have_key(:normal_key)
+      expect(sanitized[2]).to eq(password: "[FILTERED]", normal_key: "value")
       expect(sanitized[3].size).to eq(5)
     end
   end

@@ -160,6 +160,42 @@ module DeadBro
     "unknown"
   end
 
+  # The app's config.filter_parameters as an ActiveSupport::ParameterFilter,
+  # so that what the app hides from its own logs stays out of DeadBro too.
+  # Controller params arrive filtered by Rails (request.filtered_parameters);
+  # job arguments and what ErrorMiddleware reads from the Rack request don't.
+  # ErrorMiddleware passes the request's own list instead
+  # (env["action_dispatch.parameter_filter"]).
+  #
+  # nil outside Rails, with no filters, or without ActiveSupport's
+  # ParameterFilter. Any other error is raised, so that callers drop the
+  # values rather than send them unfiltered.
+  def self.parameter_filter(filters = nil)
+    filters = app_filter_parameters unless filters.is_a?(Array)
+    return nil if filters.nil? || filters.empty?
+
+    # Kept until the list changes: building one per job costs more than
+    # comparing the lists.
+    cached = @parameter_filter
+    return cached[1] if cached && cached[0] == filters
+
+    require "active_support/parameter_filter"
+    filter = ::ActiveSupport::ParameterFilter.new(filters)
+    @parameter_filter = [filters.dup, filter]
+    filter
+  rescue LoadError
+    nil
+  end
+
+  def self.app_filter_parameters
+    return nil unless defined?(::Rails) && ::Rails.respond_to?(:application)
+
+    config = ::Rails.application&.config
+    filters = config.filter_parameters if config.respond_to?(:filter_parameters)
+    filters.is_a?(Array) ? filters : nil
+  end
+  private_class_method :app_filter_parameters
+
   def self.process_kind
     @process_kind ||= begin
       fingerprint = "#{$PROGRAM_NAME} #{process_command_line}".downcase

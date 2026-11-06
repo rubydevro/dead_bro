@@ -80,9 +80,10 @@ if defined?(Rails) && defined?(Rails::Railtie)
             DeadBro::JobSubscriber.subscribe!(client: shared_client)
           end
 
-          # Always start the monitor thread. The thread runs every 60s but
-          # post_monitor_stats skips the HTTP POST when monitor_enabled
-          # is false, so the backend can toggle monitoring on/off mid-process.
+          # Always start the monitor thread. It wakes every 60s but collects
+          # and posts only when the client would send the stats (an API key,
+          # monitor_enabled on), so the backend can toggle monitoring on/off
+          # mid-process.
           require "dead_bro/monitor"
           DeadBro.monitor = DeadBro::Monitor.new(client: shared_client)
           DeadBro.monitor.start
