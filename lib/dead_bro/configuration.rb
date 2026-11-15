@@ -273,7 +273,18 @@ module DeadBro
       DeadBro.process_deploy_id
     end
 
+    # Controllers DeadBro never tracks, whatever the exclusion list says. The list is
+    # remote-managed and replaced wholesale whenever settings arrive, so a default put
+    # in it would be wiped on the first response; this is checked ahead of it instead.
+    #
+    # DeadBroHub is the dead_bro_hub gem's BroHub section: every page fetches from
+    # DeadBro, so tracking it would feed DeadBro's own reads back in as the app's traffic.
+    BUILT_IN_EXCLUDED_CONTROLLER_PREFIXES = ["DeadBroHub::"].freeze
+
     def excluded_controller?(controller_name, action_name = nil)
+      name = controller_name.to_s
+      return true if BUILT_IN_EXCLUDED_CONTROLLER_PREFIXES.any? { |prefix| name.start_with?(prefix) }
+
       compiled = @compiled_excluded_controllers
       return false if compiled.nil? || compiled.empty?
 

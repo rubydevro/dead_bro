@@ -40,6 +40,16 @@ RSpec.describe DeadBro::Subscriber, "per-request-type sampling" do
     ) {}
   end
 
+  it "sends nothing for dead_bro_hub pages, not even their errors" do
+    DeadBro.configuration.sample_rate = 100
+
+    described_class.subscribe!(client: stub_client)
+    instrument(controller: "DeadBroHub::OverviewController", action: "show")
+    instrument(controller: "DeadBroHub::QueriesController", action: "index", exception: ["RuntimeError", "boom"])
+
+    expect(captured_payloads).to be_empty
+  end
+
   it "samples out a request type whose override is 0, even with global sample_rate 100" do
     DeadBro.configuration.sample_rate = 100
     DeadBro.configuration.sample_rates_by_type = {"UsersController#index" => 0}

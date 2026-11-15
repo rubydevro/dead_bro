@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.2.39] - 2026-11-15
+
+### Changed
+- **The `dead_bro_hub` pages are never tracked.** Every page of the DeadBro section in BroHub (`DeadBroHub::*` controllers) fetches its data from DeadBro, so tracking them would have counted those reads as the app's own traffic. They are excluded built-in rather than through `excluded_controllers`, which DeadBro replaces wholesale whenever settings arrive; the exclusion can't be edited or removed from the dashboard. Uncaught exceptions from those pages are still reported.
+
 ## [0.2.38] - 2026-10-26
 
 ### Added

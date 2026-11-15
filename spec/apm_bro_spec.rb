@@ -524,6 +524,19 @@ RSpec.describe DeadBro do
       expect(config.excluded_controller?("UsersController")).to be false
     end
 
+    it "never tracks the dead_bro_hub pages, whatever the exclusion list says" do
+      config = DeadBro::Configuration.new
+
+      expect(config.excluded_controller?("DeadBroHub::OverviewController", "show")).to be true
+      expect(config.excluded_controller?("DeadBroHub::ErrorsController")).to be true
+      expect(config.excluded_controller?("DeadBroHubby::Thing")).to be false
+
+      # Remote settings replace the whole list; the built-in exclusion must survive that.
+      config.apply_remote_settings("excluded_controllers" => [])
+      expect(config.excluded_controller?("DeadBroHub::QueriesController", "index")).to be true
+      expect(config.excluded_controller?("UsersController", "index")).to be false
+    end
+
     it "excludes specified controller#action pairs" do
       config = DeadBro::Configuration.new
       config.excluded_controllers = [
