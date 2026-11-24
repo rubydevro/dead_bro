@@ -77,7 +77,7 @@ module DeadBro
         agg[:collection_count]        += view_info[:collection_count].to_i
         agg[:collection_cached_count] += view_info[:collection_cached_count].to_i
       else
-        return if aggregates.size >= MAX_TRACKED_EVENTS
+        return if aggregates.size >= MAX_TRACKED_EVENTS && !DeadBro::SuperSample.active?
         aggregates[key] = {
           identifier:              key,
           type:                    view_info[:type],

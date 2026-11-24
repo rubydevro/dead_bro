@@ -65,8 +65,8 @@ module DeadBro
       return yield unless events.is_a?(Array) && active_stack.is_a?(Array)
 
       depth = active_stack.length
-      return yield if depth > MAX_DEPTH
-      return yield if events.length >= MAX_SPANS_PER_REQUEST
+      return yield if depth > MAX_DEPTH && !DeadBro::SuperSample.active?
+      return yield if events.length >= MAX_SPANS_PER_REQUEST && !DeadBro::SuperSample.active?
 
       sanitized_label = sanitize_label(label)
       sanitized_tags = sanitize_tags(tags)
@@ -102,7 +102,9 @@ module DeadBro
         # field unset rather than shipping an empty string the dashboard would
         # render as a blank exception.
         class_name = e.class.name
-        frame[:exception_class] = class_name[0, 200] if class_name
+        if class_name
+          frame[:exception_class] = (class_name.length > 200 && !DeadBro::SuperSample.active?) ? class_name[0, 200] : class_name
+        end
         raise
       ensure
         active_stack.pop if active_stack.last.equal?(frame)
@@ -115,7 +117,7 @@ module DeadBro
     def sanitize_label(label)
       text = label.to_s.strip
       text = "block" if text.empty?
-      (text.length > MAX_LABEL_LENGTH) ? text[0, MAX_LABEL_LENGTH] + "..." : text
+      (text.length > MAX_LABEL_LENGTH && !DeadBro::SuperSample.active?) ? text[0, MAX_LABEL_LENGTH] + "..." : text
     rescue StandardError
       "block"
     end
@@ -123,12 +125,15 @@ module DeadBro
     def sanitize_tags(tags)
       return {} unless tags.is_a?(Hash) && tags.any?
 
-      tags.first(MAX_TAGS).each_with_object({}) do |(key, value), out|
-        k = key.to_s.strip[0, 50]
+      # A super sample keeps every tag, with its whole key and value.
+      whole = DeadBro::SuperSample.active?
+      (whole ? tags : tags.first(MAX_TAGS)).each_with_object({}) do |(key, value), out|
+        k = key.to_s.strip
+        k = k[0, 50] unless whole
         next if k.empty?
 
         v = value.to_s.strip
-        v = v[0, MAX_TAG_VALUE_LENGTH] + "..." if v.length > MAX_TAG_VALUE_LENGTH
+        v = v[0, MAX_TAG_VALUE_LENGTH] + "..." if v.length > MAX_TAG_VALUE_LENGTH && !whole
         out[k] = v
       end
     rescue StandardError

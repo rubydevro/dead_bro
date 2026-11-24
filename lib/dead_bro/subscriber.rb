@@ -8,7 +8,14 @@ module DeadBro
     EVENT_NAME = "process_action.action_controller"
 
     def self.subscribe!(client: Client.new)
+      # A request drawn as a super sample stays one when its type needs one.
+      ActiveSupport::Notifications.subscribe("start_processing.action_controller", DeadBro::SuperSample::RequestListener.new)
+
       ActiveSupport::Notifications.subscribe(EVENT_NAME) do |name, started, finished, _unique_id, data|
+        # It stays one until this block is left (see ensure), so what is built
+        # for its payload here isn't cut either.
+        super_sample = DeadBro::SuperSample.request?
+
         # An exception the action raised is this listener's to report (or to
         # drop with an excluded request) — ErrorMiddleware must not send it again.
         mark_reported(data)
@@ -52,8 +59,9 @@ module DeadBro
 
         has_error = data[:exception] || data[:exception_object]
         request_type_key = "#{controller_name}##{action_name}"
-        # Errors always ship regardless of sampling (this is what the docs promise).
-        unless has_error || DeadBro.configuration.should_sample?(request_type_key)
+        # Errors always ship regardless of sampling (this is what the docs promise),
+        # and so does a super sample.
+        unless has_error || super_sample || DeadBro.configuration.should_sample?(request_type_key)
           drain_request_tracking
           next
         end
@@ -195,6 +203,7 @@ module DeadBro
           watch_events: watch_events,
           logs: DeadBro.logger.logs
         }
+        detail_fields[:super_sample] = true if super_sample
         # The span tree (see SpanTracker); the middleware spans are added when
         # the payload is sent.
         spans = DeadBro::SpanTracker.payload_spans
@@ -209,7 +218,11 @@ module DeadBro
           begin
             exception_class, exception_message = data[:exception] if data[:exception]
             exception_obj = data[:exception_object]
-            backtrace = Array(exception_obj&.backtrace).first(50).map { |line| sanitize_string(line) }
+            backtrace = Array(exception_obj&.backtrace)
+            backtrace = backtrace.first(50) unless super_sample
+            backtrace = backtrace.map { |line| sanitize_string(line) }
+            message = (exception_message || exception_obj&.message).to_s
+            message = message[0, 1000] unless super_sample
 
             error_payload = detail_fields.merge(
               controller: data[:controller],
@@ -227,7 +240,7 @@ module DeadBro
               user_agent: safe_user_agent(data),
               user_id: extract_user_id(data),
               exception_class: exception_class || exception_obj&.class&.name,
-              message: sanitize_string((exception_message || exception_obj&.message).to_s[0, 1000]),
+              message: sanitize_string(message),
               backtrace: backtrace,
               fingerprint: compute_error_fingerprint(exception_obj),
               cause_chain: build_cause_chain(exception_obj),
@@ -269,6 +282,8 @@ module DeadBro
         # Anything raised here would fail the host's request (see
         # DeadBro::CONTAINED_ERRORS) — drop this request's metrics instead.
         drain_request_tracking
+      ensure
+        DeadBro::SuperSample.finish_request
       end
     end
 
@@ -345,8 +360,13 @@ module DeadBro
       router_keys.each { |k| filtered.delete(k) || filtered.delete(k.to_sym) }
 
       # Truncate deeply to keep payload small and safe. truncate_value also redacts
-      # sensitive keys at every nesting level (e.g. user[password]).
-      truncate_value(filtered)
+      # sensitive keys at every nesting level (e.g. user[password]). A super
+      # sample's params are redacted the same way and not cut.
+      if DeadBro::SuperSample.active?
+        truncate_value(filtered, max_str: nil, max_array: nil, max_hash_keys: nil)
+      else
+        truncate_value(filtered)
+      end
     rescue
       {}
     end
@@ -366,18 +386,19 @@ module DeadBro
     end
 
     # Recursively truncate values to reasonable sizes to avoid huge payloads, and
-    # redact values whose key looks sensitive at any nesting level.
+    # redact values whose key looks sensitive at any nesting level. A nil limit
+    # cuts nothing.
     def self.truncate_value(value, max_str: 200, max_array: 20, max_hash_keys: 30)
       case value
       when String
         sanitized = sanitize_string(value)
-        (sanitized.length > max_str) ? sanitized[0, max_str] + "…" : sanitized
+        (max_str && sanitized.length > max_str) ? sanitized[0, max_str] + "…" : sanitized
       when Numeric, TrueClass, FalseClass, NilClass
         value
       when Array
-        value[0, max_array].map { |v| truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys) }
+        (max_array ? value[0, max_array] : value).map { |v| truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys) }
       when Hash
-        entries = value.to_a[0, max_hash_keys]
+        entries = max_hash_keys ? value.to_a[0, max_hash_keys] : value.to_a
         entries.each_with_object({}) do |(k, v), memo|
           # Scrubbed first: the sensitive-key regex raises on a key that isn't
           # valid UTF-8, which would drop the whole params hash.
@@ -385,7 +406,7 @@ module DeadBro
           memo[k] = sensitive_key?(k) ? "[FILTERED]" : truncate_value(v, max_str: max_str, max_array: max_array, max_hash_keys: max_hash_keys)
         end
       else
-        (value.to_s.length > max_str) ? value.to_s[0, max_str] + "…" : value.to_s
+        (max_str && value.to_s.length > max_str) ? value.to_s[0, max_str] + "…" : value.to_s
       end
     end
 
@@ -414,10 +435,16 @@ module DeadBro
       # Strip any userinfo@ and a trailing :port so only the hostname remains.
       # Only a numeric trailing port is removed, so IPv6 literals ([::1]) survive.
       host = host.split("@").last.to_s
-      host = host.sub(/:\d+\z/, "")
-      host.downcase[0, 255]
+      host = host.sub(/:\d+\z/, "").downcase
+      DeadBro::SuperSample.active? ? host : host[0, 255]
     rescue
       ""
+    end
+
+    # Not cut in a super sample.
+    def self.cut_user_agent(user_agent)
+      user_agent = sanitize_string(user_agent)
+      DeadBro::SuperSample.active? ? user_agent : user_agent[0..200]
     end
 
     def self.safe_user_agent(data)
@@ -430,7 +457,7 @@ module DeadBro
           elsif data[:request].respond_to?(:env)
             ua = data[:request].env && data[:request].env["HTTP_USER_AGENT"]
           end
-          return sanitize_string(ua)[0..200]
+          return cut_user_agent(ua)
         end
 
         # Fallback to headers object/hash if present in notification data
@@ -438,7 +465,7 @@ module DeadBro
           headers = data[:headers]
           if headers.respond_to?(:[])
             ua = headers["HTTP_USER_AGENT"] || headers["User-Agent"] || headers["user-agent"]
-            return sanitize_string(ua)[0..200]
+            return cut_user_agent(ua)
           elsif headers.respond_to?(:to_h)
             h = begin
               headers.to_h
@@ -446,14 +473,14 @@ module DeadBro
               {}
             end
             ua = h["HTTP_USER_AGENT"] || h["User-Agent"] || h["user-agent"]
-            return sanitize_string(ua)[0..200]
+            return cut_user_agent(ua)
           end
         end
 
         # Fallback to env hash if present in notification data
         if data[:env].is_a?(Hash)
           ua = data[:env]["HTTP_USER_AGENT"]
-          return sanitize_string(ua)[0..200]
+          return cut_user_agent(ua)
         end
 
         ""
@@ -567,14 +594,16 @@ module DeadBro
 
     def self.build_cause_chain(exception)
       return [] unless exception
+      # A super sample gets every cause, each with its whole message and backtrace.
+      whole = DeadBro::SuperSample.active?
       chain = []
       cause = exception.cause
       depth = 0
-      while cause && depth < 5
+      while cause && (whole || depth < 5)
         chain << {
           exception_class: cause.class.name,
-          message: sanitize_string(cause.message.to_s[0, 500]),
-          backtrace_top: Array(cause.backtrace).first(3).map { |line| sanitize_string(line) }
+          message: sanitize_string(whole ? cause.message.to_s : cause.message.to_s[0, 500]),
+          backtrace_top: (whole ? Array(cause.backtrace) : Array(cause.backtrace).first(3)).map { |line| sanitize_string(line) }
         }
         cause = cause.cause
         depth += 1

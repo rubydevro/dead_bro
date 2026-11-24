@@ -20,7 +20,8 @@ module DeadBro
 
     # Hard cap per-thread buffer size. Prevents unbounded growth when a
     # request/job logs a lot, or when tracking never gets a chance to flush
-    # (e.g. code running outside a request lifecycle).
+    # (e.g. code running outside a request lifecycle). A super sample
+    # (DeadBro::SuperSample) keeps every entry.
     MAX_LOG_ENTRIES = 500
 
     def initialize
@@ -77,7 +78,7 @@ module DeadBro
       message = DeadBro::Sanitizer.string(message)
 
       buffer = (Thread.current[@thread_logs_key] ||= [])
-      if buffer.length >= MAX_LOG_ENTRIES
+      if buffer.length >= MAX_LOG_ENTRIES && !DeadBro::SuperSample.active?
         Thread.current[@thread_logs_dropped_key] =
           (Thread.current[@thread_logs_dropped_key] || 0) + 1
       else

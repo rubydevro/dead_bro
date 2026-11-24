@@ -71,6 +71,8 @@ You can still set `config.enabled` in Ruby if you need to force the integration 
 
 To control data volume, DeadBro supports request sampling (track a percentage of requests), excluding specific controllers/jobs from tracking, and whitelisting (tracking *only* specific controllers/jobs). All of this is configured in the DeadBro dashboard — sample rate, `excluded_controllers`/`excluded_jobs`, and `exclusive_controllers`/`exclusive_jobs` patterns (wildcards like `Admin::*` and `Admin::*#*` supported). Exclusion always takes precedence over whitelisting when a pattern matches both.
 
+**Super samples.** In the Performance table of the DeadBro dashboard you can ask for a number of super samples of a request type (a controller action or a job class). While that type still needs any, about 1 in 100 of its requests is sent whole, marked as a super sample: nothing recorded for it is capped or cut, the `max_sql_queries_to_send` and `max_logs_to_send` limits don't apply, and it is sent whatever the sample rate. Sensitive values are filtered as in every sample. DeadBro stores each one and counts down the number still needed. Requires `dead_bro` ≥ 0.2.40.
+
 ## SQL Query Tracking
 
 DeadBro automatically tracks SQL queries executed during each request and job. Each request will include a `sql_queries` array containing:

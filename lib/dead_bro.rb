@@ -31,6 +31,7 @@ module DeadBro
   autoload :Logger, "dead_bro/logger"
   autoload :WatchTracker, "dead_bro/watch_tracker"
   autoload :SpanTracker, "dead_bro/span_tracker"
+  autoload :SuperSample, "dead_bro/super_sample"
   autoload :MiddlewareProbe, "dead_bro/middleware_probe"
   autoload :Sanitizer, "dead_bro/sanitizer"
   begin

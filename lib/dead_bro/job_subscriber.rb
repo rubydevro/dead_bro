@@ -12,7 +12,9 @@ module DeadBro
 
     def self.subscribe!(client: Client.new)
       # Snap GC state before the job runs so stop_request_tracking gets a valid diff
-      ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, _data|
+      ActiveSupport::Notifications.subscribe("perform_start.active_job") do |_name, _started, _finished, _unique_id, data|
+        # Picks the jobs sent as super samples.
+        DeadBro::SuperSample.start_job(data[:job])
         DeadBro::GcTracker.start_request_tracking if defined?(DeadBro::GcTracker)
         DeadBro::ArObjectTracker.start_request_tracking if defined?(DeadBro::ArObjectTracker)
       rescue *DeadBro::CONTAINED_ERRORS
@@ -41,6 +43,10 @@ module DeadBro
       # Covering handled attempts would need separate instrumentation on
       # enqueue_retry.active_job / retry_stopped.active_job / discard.active_job.
       ActiveSupport::Notifications.subscribe(JOB_EVENT_NAME) do |name, started, finished, _unique_id, data|
+        # It stays one until this block is left (see ensure), so what is built
+        # for its payload here isn't cut either.
+        super_sample = DeadBro::SuperSample.job?
+
         begin
           if DeadBro.configuration.skip_tracking?
             drain_job_tracking
@@ -65,9 +71,10 @@ module DeadBro
 
         # Skip out via sampling before we build any payload — jobs can be chatty
         # enough that even the "cheap" stop/analyze work matters under load.
-        # Errors always ship regardless of sampling, matching Subscriber's web path.
+        # Errors always ship regardless of sampling, matching Subscriber's web path,
+        # and so does a super sample.
         job_type_key = "#{job_class_name}#perform"
-        unless has_error || DeadBro.configuration.should_sample?(job_type_key)
+        unless has_error || super_sample || DeadBro.configuration.should_sample?(job_type_key)
           drain_job_tracking
           next
         end
@@ -155,11 +162,18 @@ module DeadBro
           watch_events: watch_events,
           logs: DeadBro.logger.logs
         }.merge(dependency_events)
+        payload[:super_sample] = true if super_sample
 
         if has_error
           payload[:exception_class] = exception.class.name
-          payload[:message] = DeadBro::Sanitizer.string(exception.message.to_s[0, 1000])
-          payload[:backtrace] = Array(exception.backtrace).first(50).map { |line| DeadBro::Sanitizer.string(line) }
+          message = exception.message.to_s
+          backtrace = Array(exception.backtrace)
+          unless super_sample
+            message = message[0, 1000]
+            backtrace = backtrace.first(50)
+          end
+          payload[:message] = DeadBro::Sanitizer.string(message)
+          payload[:backtrace] = backtrace.map { |line| DeadBro::Sanitizer.string(line) }
           payload[:fingerprint] = DeadBro::Subscriber.compute_error_fingerprint(exception)
           payload[:cause_chain] = DeadBro::Subscriber.build_cause_chain(exception)
           payload[:error] = true
@@ -174,6 +188,8 @@ module DeadBro
         # DeadBro::CONTAINED_ERRORS) — drop this job's metrics instead. Jobs have
         # no Rack middleware to reset thread-locals afterwards, so drain here.
         drain_job_tracking
+      ensure
+        DeadBro::SuperSample.finish_job
       end
     rescue
       # Never raise from instrumentation install
@@ -268,17 +284,19 @@ module DeadBro
 
       # Limit and sanitize job arguments. Strings are scrubbed to valid UTF-8 here
       # so one binary argument doesn't send the payload down the client's slow retry path.
-      arguments.first(10).map do |arg|
+      # A super sample's arguments are filtered the same way and not cut.
+      whole = DeadBro::SuperSample.active?
+      (whole ? arguments : arguments.first(10)).map do |arg|
         case arg
         when String
           str = DeadBro::Sanitizer.string(arg)
-          (str.length > 200) ? str[0, 200] + "..." : str
+          (str.length > 200 && !whole) ? str[0, 200] + "..." : str
         when Hash
           # Filter sensitive keys and limit size
           filtered = arg.reject { |k, _| %w[password token secret key].include?(k.to_s) }
-          DeadBro::Sanitizer.deep((filtered.keys.size > 20) ? filtered.first(20).to_h : filtered)
+          DeadBro::Sanitizer.deep((filtered.keys.size > 20 && !whole) ? filtered.first(20).to_h : filtered)
         when Array
-          DeadBro::Sanitizer.deep(arg.first(5))
+          DeadBro::Sanitizer.deep(whole ? arg : arg.first(5))
         when ActiveRecord::Base
           # Handle ActiveRecord objects safely
           "#{arg.class.name}##{begin
@@ -289,7 +307,7 @@ module DeadBro
         else
           # Convert to string and truncate, but avoid object inspection
           str = DeadBro::Sanitizer.string(arg)
-          (str.length > 200) ? str[0, 200] + "..." : str
+          (str.length > 200 && !whole) ? str[0, 200] + "..." : str
         end
       end
     rescue

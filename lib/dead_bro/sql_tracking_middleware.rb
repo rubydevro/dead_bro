@@ -25,6 +25,9 @@ module DeadBro
       rack_entry = Time.now
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = rack_entry
 
+      # Before anything is recorded: a super sample has no limits from here on.
+      DeadBro::SuperSample.start_tracking
+
       # Queue time: gap between when the upstream proxy accepted the connection and when a Rack
       # worker picked it up. Heroku sets X-Request-Start as "t=<microseconds>"; nginx typically
       # uses "t=<seconds.ms>". Both are parsed below.
@@ -161,6 +164,8 @@ module DeadBro
     ensure
       Thread.current[:dead_bro_alloc_active] = nil
       Thread.current[DeadBro::TRACKING_START_TIME_KEY] = nil
+      # Also for a drawn request that never reached a controller action.
+      DeadBro::SuperSample.finish_request
       # Keeps the spans (and a payload held for the middleware chain) until
       # the outermost middleware returns.
       DeadBro::SpanTracker.stop_request if defined?(DeadBro::SpanTracker)

@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [0.2.40] - 2026-11-23
+
+### Added
+- **Super samples.** DeadBro can ask for a number of super samples of a request type (a controller action or a job class), set per request type in the dashboard's Performance table and sent to the gem as the `super_samples_by_type` setting. While any are needed, each request and job is drawn with a 1% chance, and a drawn one whose type still needs a super sample is sent whole, marked `super_sample: true`: about 1 in 100 requests of that type. Nothing recorded for it is capped (log entries, spans, cache, Redis, HTTP, Elasticsearch, view, `DeadBro.watch` and transaction events, the one-hour tracking limit) or cut (SQL text, params, job arguments, cache and Redis keys, the user agent, error messages, backtraces and causes, `DeadBro.watch` labels and tags), `max_sql_queries_to_send` and `max_logs_to_send` don't cut its payload, and it is sent whatever the sample rate. Sensitive values are filtered as in every sample. DeadBro stores each one it receives and answers with the number still needed. Every process holds that number until its next response, so more than one process can send a super sample for the last one needed; DeadBro stores those as super samples too.
+
 ## [0.2.39] - 2026-11-15
 
 ### Changed

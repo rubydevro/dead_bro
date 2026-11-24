@@ -230,6 +230,8 @@ module DeadBro
 
     def truncate_payload_for_request(payload)
       return payload unless payload.is_a?(Hash)
+      # A super sample is sent whole.
+      return payload if payload[:super_sample]
 
       max_sql = @configuration.max_sql_queries_to_send
       max_logs = @configuration.max_logs_to_send
