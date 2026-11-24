@@ -74,9 +74,9 @@ RSpec.describe DeadBro::SuperSample do
     reset_thread
   end
 
-  # The 1% draw: a hit, or a miss.
+  # The 1% draw, a number from 1 to 100: a hit, or a miss.
   def draw(hit)
-    allow(described_class).to receive(:rand).and_return(hit ? 0.0 : 0.5)
+    allow(described_class).to receive(:rand).with(1..100).and_return(hit ? 1 : 50)
   end
 
   # What Rails does for one request: DeadBro's middleware, whatever runs
@@ -178,14 +178,15 @@ RSpec.describe DeadBro::SuperSample do
       expect(request).not_to have_key(:super_sample)
     end
 
-    it "is drawn with a 1% chance" do
+    it "is drawn with a 1% chance: 1 of the numbers from 1 to 100" do
       config.super_samples_by_type = {"OrdersController#index" => 2}
 
-      allow(described_class).to receive(:rand).and_return(0.0099)
-      expect(request[:super_sample]).to be true
+      drawn = (1..100).select do |number|
+        allow(described_class).to receive(:rand).with(1..100).and_return(number)
+        request.key?(:super_sample)
+      end
 
-      allow(described_class).to receive(:rand).and_return(0.01)
-      expect(request).not_to have_key(:super_sample)
+      expect(drawn).to eq([1])
     end
 
     it "is sent as usual when it is drawn and its type needs none" do
