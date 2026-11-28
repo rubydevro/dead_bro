@@ -27,11 +27,26 @@ module DeadBro
       return if circuit_open?
 
       payload = truncate_payload_for_request(payload)
-      body = {event: event_name, payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
+      body = metric_body(event_name, payload)
+      json = nil
+
+      # A super sample over the byte ceiling goes out with the usual limits,
+      # still marked, so the backend counts it and stops asking for more.
+      if payload.is_a?(Hash) && payload[:super_sample]
+        json = serialize(body)
+        return unless json
+
+        if json.bytesize > DeadBro::SuperSample::MAX_PAYLOAD_BYTES
+          payload = truncate_payload_for_request(payload, factor: 1).merge(super_sample_capped: true)
+          body = metric_body(event_name, payload)
+          json = nil
+        end
+      end
 
       dispatch_request(
         url: metrics_endpoint_url,
         body: body,
+        json: json,
         event_name: event_name,
         apply_settings: true
       )
@@ -128,8 +143,13 @@ module DeadBro
       end
     end
 
-    def dispatch_request(url:, body:, event_name:, apply_settings: false)
-      json = serialize(body)
+    def metric_body(event_name, payload)
+      {event: event_name, payload: payload, sent_at: Time.now.utc.iso8601, revision: @configuration.resolve_deploy_id, gem_version: DeadBro::VERSION}
+    end
+
+    # `json`: the body already serialized, when the caller had to measure it.
+    def dispatch_request(url:, body:, event_name:, apply_settings: false, json: nil)
+      json ||= serialize(body)
       return unless json
 
       uri = URI.parse(url)
@@ -228,11 +248,14 @@ module DeadBro
       # Malformed response — ignore, settings stay as-is
     end
 
-    def truncate_payload_for_request(payload)
+    # A super sample has LIMIT_FACTOR times the room, unless `factor` says
+    # otherwise (1: the usual limits, for one over the byte ceiling).
+    def truncate_payload_for_request(payload, factor: nil)
       return payload unless payload.is_a?(Hash)
 
-      max_sql = @configuration.max_sql_queries_to_send
-      max_logs = @configuration.max_logs_to_send
+      factor ||= payload[:super_sample] ? DeadBro::SuperSample::LIMIT_FACTOR : 1
+      max_sql = @configuration.max_sql_queries_to_send * factor
+      max_logs = @configuration.max_logs_to_send * factor
 
       out = payload.dup
 

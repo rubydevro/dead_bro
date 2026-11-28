@@ -41,6 +41,11 @@ module DeadBro
     # (or "JobClass#perform") strings — same identity ApmRequestType uses server-side.
     attr_reader :sample_rates_by_type
 
+    # How many super samples each request type still needs, keyed like
+    # sample_rates_by_type (see DeadBro::SuperSample). Every settings response
+    # replaces it with the numbers the backend still needs.
+    attr_reader :super_samples_by_type
+
     # Tracks when we last received settings from the backend (in-memory only)
     attr_accessor :settings_received_at
 
@@ -82,6 +87,7 @@ module DeadBro
       watch_enabled excluded_controllers excluded_jobs exclusive_controllers exclusive_jobs
       monitor_enabled enable_db_stats enable_process_stats enable_system_stats
       sample_rates_by_type report_routing_errors middleware_spans_enabled
+      super_samples_by_type
     ].freeze
 
     def initialize
@@ -124,6 +130,7 @@ module DeadBro
       self.exclusive_controllers = []
       self.exclusive_jobs = []
       self.sample_rates_by_type = {}
+      self.super_samples_by_type = {}
       @monitor_enabled = false
       @enable_db_stats = false
       @enable_process_stats = false
@@ -180,6 +187,14 @@ module DeadBro
       end
     end
 
+    def super_samples_by_type=(value)
+      return @super_samples_by_type = {} unless value.is_a?(Hash)
+
+      @super_samples_by_type = value.each_with_object({}) do |(k, v), memo|
+        memo[k.to_s] = v.to_i
+      end
+    end
+
     # Apply a settings hash received from the backend response.
     # Only known keys are applied; unknown keys are silently ignored.
     # Serialized so concurrent HTTP threads do not interleave writes with request-thread reads.
@@ -215,7 +230,7 @@ module DeadBro
             send(:"#{k}=", !!value)
           when "excluded_controllers", "excluded_jobs", "exclusive_controllers", "exclusive_jobs"
             send(:"#{k}=", Array(value).map(&:to_s))
-          when "sample_rates_by_type"
+          when "sample_rates_by_type", "super_samples_by_type"
             send(:"#{k}=", value)
           end
         end

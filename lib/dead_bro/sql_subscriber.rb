@@ -118,7 +118,7 @@ module DeadBro
       return false unless current_queries_array.is_a?(Array)
 
       # Check count limit
-      return false if current_queries_array.length >= max_count
+      return false if current_queries_array.length >= DeadBro::SuperSample.limit(max_count)
 
       # Check time limit
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -151,7 +151,7 @@ module DeadBro
     def self.record_transaction_event(name, started, finished)
       current = current_txn_events_array
       return unless current
-      return if current.length >= MAX_TRACKED_TXN_EVENTS
+      return if current.length >= DeadBro::SuperSample.limit(MAX_TRACKED_TXN_EVENTS)
 
       tracking_start = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
       start_offset_ms = tracking_start ? ((started - tracking_start) * 1000.0).round(2) : nil
@@ -384,8 +384,9 @@ module DeadBro
 
       # Cap length first — most "expensive" queries from the app's perspective
       # are big UPDATE/INSERT with long literal blobs; don't burn regex time on
-      # those when we're going to truncate anyway.
-      sql = sql[0..SANITIZE_MAX_LENGTH] + "..." if sql.length > SANITIZE_MAX_LENGTH
+      # those when we're going to truncate anyway. A super sample's SQL isn't cut.
+      max_length = DeadBro::SuperSample.limit(SANITIZE_MAX_LENGTH)
+      sql = sql[0..max_length] + "..." if sql.length > max_length
       # The regexes below raise on invalid UTF-8 (e.g. a binary literal inlined
       # by an adapter without prepared statements).
       sql = DeadBro::Sanitizer.string(sql)
@@ -671,16 +672,18 @@ module DeadBro
 
     # Cheap app-only backtrace for the current query. Uses caller_locations
     # (lazy frame objects, no string allocations until we render) and keeps
-    # only frames under app/ (filtering vendor/). Returns at most N frames.
+    # only frames under app/ (filtering vendor/). Returns at most N frames of
+    # the nearest 100 (both a hundred times as many in a super sample).
     def self.capture_app_backtrace
-      locations = caller_locations(1, 100) || []
+      locations = caller_locations(1, DeadBro::SuperSample.limit(100)) || []
+      max_frames = DeadBro::SuperSample.limit(APP_BACKTRACE_MAX_FRAMES)
       frames = []
       locations.each do |loc|
         path = loc.path.to_s
         next unless path.include?("app/")
         next if path.include?("/vendor/")
         frames << "#{path}:#{loc.lineno}:in `#{loc.label}'".gsub(APP_BACKTRACE_SENSITIVE_RE, "/[FILTERED]/")
-        break if frames.length >= APP_BACKTRACE_MAX_FRAMES
+        break if frames.length >= max_frames
       end
       frames
     rescue

@@ -37,7 +37,8 @@ module DeadBro
     THREAD_KEY = :dead_bro_span_context
 
     # Nodes kept per request; past it, a span's time stays in its parent's self
-    # time and the request's spans_dropped counts what was left out.
+    # time and the request's spans_dropped counts what was left out. A super
+    # sample (DeadBro::SuperSample) keeps a hundred times as many.
     MAX_NODES = 500
     # Middleware/router frames kept per request (a Rails stack has ~25).
     MAX_RACK_FRAMES = 200
@@ -356,7 +357,7 @@ module DeadBro
       end
 
       def new_node(kind, parent_id)
-        if @nodes.size >= MAX_NODES
+        if @nodes.size >= DeadBro::SuperSample.limit(MAX_NODES)
           @dropped += 1
           return nil
         end

@@ -54,7 +54,7 @@ module DeadBro
       return false unless events
 
       # Check count limit
-      return false if events.length >= MAX_TRACKED_EVENTS
+      return false if events.length >= DeadBro::SuperSample.limit(MAX_TRACKED_EVENTS)
 
       # Check time limit
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -100,7 +100,7 @@ module DeadBro
       # Keys often embed request data (e.g. a throttle keyed by user agent);
       # scrubbing here keeps one bad byte off the client's slow retry path.
       s = DeadBro::Sanitizer.string(key)
-      (s.length > 200) ? s[0, 200] + "…" : s
+      DeadBro::SuperSample.cut(s, 200, "…")
     rescue
       nil
     end
@@ -125,7 +125,8 @@ module DeadBro
     end
 
     def self.safe_namespace(ns)
-      ns.to_s[0, 100]
+      ns = ns.to_s
+      DeadBro::SuperSample.cut(ns, 100)
     rescue
       nil
     end

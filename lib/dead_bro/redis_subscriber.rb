@@ -212,7 +212,7 @@ module DeadBro
       return false unless events
 
       # Check count limit
-      return false if events.length >= MAX_TRACKED_EVENTS
+      return false if events.length >= DeadBro::SuperSample.limit(MAX_TRACKED_EVENTS)
 
       # Check time limit
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
@@ -270,7 +270,8 @@ module DeadBro
 
     def self.safe_command(cmd)
       return nil if cmd.nil?
-      DeadBro::Sanitizer.string(cmd)[0, 20]
+      cmd = DeadBro::Sanitizer.string(cmd)
+      DeadBro::SuperSample.cut(cmd, 20)
     rescue
       nil
     end
@@ -280,7 +281,7 @@ module DeadBro
     def self.safe_key(key)
       return nil if key.nil?
       s = DeadBro::Sanitizer.string(key)
-      (s.length > 200) ? s[0, 200] + "…" : s
+      DeadBro::SuperSample.cut(s, 200, "…")
     rescue
       nil
     end

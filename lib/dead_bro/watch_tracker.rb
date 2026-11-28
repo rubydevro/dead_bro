@@ -65,8 +65,8 @@ module DeadBro
       return yield unless events.is_a?(Array) && active_stack.is_a?(Array)
 
       depth = active_stack.length
-      return yield if depth > MAX_DEPTH
-      return yield if events.length >= MAX_SPANS_PER_REQUEST
+      return yield if depth > DeadBro::SuperSample.limit(MAX_DEPTH)
+      return yield if events.length >= DeadBro::SuperSample.limit(MAX_SPANS_PER_REQUEST)
 
       sanitized_label = sanitize_label(label)
       sanitized_tags = sanitize_tags(tags)
@@ -102,7 +102,9 @@ module DeadBro
         # field unset rather than shipping an empty string the dashboard would
         # render as a blank exception.
         class_name = e.class.name
-        frame[:exception_class] = class_name[0, 200] if class_name
+        if class_name
+          frame[:exception_class] = DeadBro::SuperSample.cut(class_name, 200)
+        end
         raise
       ensure
         active_stack.pop if active_stack.last.equal?(frame)
@@ -115,7 +117,7 @@ module DeadBro
     def sanitize_label(label)
       text = label.to_s.strip
       text = "block" if text.empty?
-      (text.length > MAX_LABEL_LENGTH) ? text[0, MAX_LABEL_LENGTH] + "..." : text
+      DeadBro::SuperSample.cut(text, MAX_LABEL_LENGTH, "...")
     rescue StandardError
       "block"
     end
@@ -123,12 +125,12 @@ module DeadBro
     def sanitize_tags(tags)
       return {} unless tags.is_a?(Hash) && tags.any?
 
-      tags.first(MAX_TAGS).each_with_object({}) do |(key, value), out|
-        k = key.to_s.strip[0, 50]
+      # A super sample keeps a hundred times as many tags, and as much of each.
+      tags.first(DeadBro::SuperSample.limit(MAX_TAGS)).each_with_object({}) do |(key, value), out|
+        k = DeadBro::SuperSample.cut(key.to_s.strip, 50)
         next if k.empty?
 
-        v = value.to_s.strip
-        v = v[0, MAX_TAG_VALUE_LENGTH] + "..." if v.length > MAX_TAG_VALUE_LENGTH
+        v = DeadBro::SuperSample.cut(value.to_s.strip, MAX_TAG_VALUE_LENGTH, "...")
         out[k] = v
       end
     rescue StandardError
