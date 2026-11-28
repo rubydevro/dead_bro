@@ -166,12 +166,8 @@ module DeadBro
 
         if has_error
           payload[:exception_class] = exception.class.name
-          message = exception.message.to_s
-          backtrace = Array(exception.backtrace)
-          unless super_sample
-            message = message[0, 1000]
-            backtrace = backtrace.first(50)
-          end
+          message = DeadBro::SuperSample.cut(exception.message.to_s, 1000)
+          backtrace = Array(exception.backtrace).first(DeadBro::SuperSample.limit(50))
           payload[:message] = DeadBro::Sanitizer.string(message)
           payload[:backtrace] = backtrace.map { |line| DeadBro::Sanitizer.string(line) }
           payload[:fingerprint] = DeadBro::Subscriber.compute_error_fingerprint(exception)
@@ -284,19 +280,17 @@ module DeadBro
 
       # Limit and sanitize job arguments. Strings are scrubbed to valid UTF-8 here
       # so one binary argument doesn't send the payload down the client's slow retry path.
-      # A super sample's arguments are filtered the same way and not cut.
-      whole = DeadBro::SuperSample.active?
-      (whole ? arguments : arguments.first(10)).map do |arg|
+      # A super sample's arguments are filtered the same way, with a hundred times the room.
+      arguments.first(DeadBro::SuperSample.limit(10)).map do |arg|
         case arg
         when String
-          str = DeadBro::Sanitizer.string(arg)
-          (str.length > 200 && !whole) ? str[0, 200] + "..." : str
+          DeadBro::SuperSample.cut(DeadBro::Sanitizer.string(arg), 200, "...")
         when Hash
           # Filter sensitive keys and limit size
           filtered = arg.reject { |k, _| %w[password token secret key].include?(k.to_s) }
-          DeadBro::Sanitizer.deep((filtered.keys.size > 20 && !whole) ? filtered.first(20).to_h : filtered)
+          DeadBro::Sanitizer.deep(filtered.first(DeadBro::SuperSample.limit(20)).to_h)
         when Array
-          DeadBro::Sanitizer.deep(whole ? arg : arg.first(5))
+          DeadBro::Sanitizer.deep(arg.first(DeadBro::SuperSample.limit(5)))
         when ActiveRecord::Base
           # Handle ActiveRecord objects safely
           "#{arg.class.name}##{begin
@@ -306,8 +300,7 @@ module DeadBro
           end}"
         else
           # Convert to string and truncate, but avoid object inspection
-          str = DeadBro::Sanitizer.string(arg)
-          (str.length > 200 && !whole) ? str[0, 200] + "..." : str
+          DeadBro::SuperSample.cut(DeadBro::Sanitizer.string(arg), 200, "...")
         end
       end
     rescue

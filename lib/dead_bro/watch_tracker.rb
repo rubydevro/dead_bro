@@ -65,8 +65,8 @@ module DeadBro
       return yield unless events.is_a?(Array) && active_stack.is_a?(Array)
 
       depth = active_stack.length
-      return yield if depth > MAX_DEPTH && !DeadBro::SuperSample.active?
-      return yield if events.length >= MAX_SPANS_PER_REQUEST && !DeadBro::SuperSample.active?
+      return yield if depth > DeadBro::SuperSample.limit(MAX_DEPTH)
+      return yield if events.length >= DeadBro::SuperSample.limit(MAX_SPANS_PER_REQUEST)
 
       sanitized_label = sanitize_label(label)
       sanitized_tags = sanitize_tags(tags)
@@ -103,7 +103,7 @@ module DeadBro
         # render as a blank exception.
         class_name = e.class.name
         if class_name
-          frame[:exception_class] = (class_name.length > 200 && !DeadBro::SuperSample.active?) ? class_name[0, 200] : class_name
+          frame[:exception_class] = DeadBro::SuperSample.cut(class_name, 200)
         end
         raise
       ensure
@@ -117,7 +117,7 @@ module DeadBro
     def sanitize_label(label)
       text = label.to_s.strip
       text = "block" if text.empty?
-      (text.length > MAX_LABEL_LENGTH && !DeadBro::SuperSample.active?) ? text[0, MAX_LABEL_LENGTH] + "..." : text
+      DeadBro::SuperSample.cut(text, MAX_LABEL_LENGTH, "...")
     rescue StandardError
       "block"
     end
@@ -125,15 +125,12 @@ module DeadBro
     def sanitize_tags(tags)
       return {} unless tags.is_a?(Hash) && tags.any?
 
-      # A super sample keeps every tag, with its whole key and value.
-      whole = DeadBro::SuperSample.active?
-      (whole ? tags : tags.first(MAX_TAGS)).each_with_object({}) do |(key, value), out|
-        k = key.to_s.strip
-        k = k[0, 50] unless whole
+      # A super sample keeps a hundred times as many tags, and as much of each.
+      tags.first(DeadBro::SuperSample.limit(MAX_TAGS)).each_with_object({}) do |(key, value), out|
+        k = DeadBro::SuperSample.cut(key.to_s.strip, 50)
         next if k.empty?
 
-        v = value.to_s.strip
-        v = v[0, MAX_TAG_VALUE_LENGTH] + "..." if v.length > MAX_TAG_VALUE_LENGTH && !whole
+        v = DeadBro::SuperSample.cut(value.to_s.strip, MAX_TAG_VALUE_LENGTH, "...")
         out[k] = v
       end
     rescue StandardError

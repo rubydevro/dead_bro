@@ -305,7 +305,7 @@ RSpec.describe DeadBro::SuperSample do
     let(:log_entries) { DeadBro::Logger::MAX_LOG_ENTRIES + 20 }
     let(:statements) { DeadBro::SpanTracker::MAX_NODES + 20 }
 
-    it "keeps every log entry" do
+    it "keeps a hundred times as many log entries" do
       ordinary, whole = ordinary_then_super do
         request { log_entries.times { |i| DeadBro.logger.info("line #{i}") } }
       end
@@ -316,7 +316,16 @@ RSpec.describe DeadBro::SuperSample do
       expect(whole[:logs].last[:msg]).to eq("line #{log_entries - 1}")
     end
 
-    it "keeps every log entry of a job" do
+    it "stops keeping log entries at a hundred times the cap" do
+      draw(true)
+      cap = DeadBro::Logger::MAX_LOG_ENTRIES * described_class::LIMIT_FACTOR
+
+      payload = request { (cap + 5).times { |i| DeadBro.logger.info("line #{i}") } }
+
+      expect(payload[:logs].size).to eq(cap + 1)
+    end
+
+    it "keeps a hundred times as many log entries of a job" do
       draw(true)
 
       payload = perform(job) { log_entries.times { |i| DeadBro.logger.info("line #{i}") } }
@@ -324,7 +333,7 @@ RSpec.describe DeadBro::SuperSample do
       expect(payload[:logs].size).to eq(log_entries)
     end
 
-    it "keeps every span" do
+    it "keeps a hundred times as many spans" do
       ordinary, whole = ordinary_then_super do
         request { statements.times { |i| sql("SELECT * FROM orders_#{i}") } }
       end
@@ -335,7 +344,17 @@ RSpec.describe DeadBro::SuperSample do
       expect(whole).not_to have_key(:spans_dropped)
     end
 
-    it "has no limits from DeadBro's middleware on, before the controller action starts" do
+    it "stops keeping spans at a hundred times the cap" do
+      draw(true)
+      cap = DeadBro::SpanTracker::MAX_NODES * described_class::LIMIT_FACTOR
+
+      payload = request { (cap + 20).times { |i| sql("SELECT * FROM orders_#{i}") } }
+
+      expect(payload[:spans].size).to eq(cap)
+      expect(payload[:spans_dropped]).to be > 0
+    end
+
+    it "has the higher limits from DeadBro's middleware on, before the controller action starts" do
       key = "throttle/" + "k" * 300
 
       ordinary, whole = ordinary_then_super do
@@ -347,22 +366,24 @@ RSpec.describe DeadBro::SuperSample do
     end
 
     [DeadBro::CacheSubscriber, DeadBro::RedisSubscriber, DeadBro::HttpInstrumentation, DeadBro::ElasticsearchSubscriber].each do |subscriber|
-      it "keeps recording #{subscriber.name.split("::").last} events past the cap and the time limit" do
+      it "keeps recording #{subscriber.name.split("::").last} events up to a hundred times the cap, within the usual time limit" do
         at_the_cap = Array.new(subscriber::MAX_TRACKED_EVENTS) { {} }
         Thread.current[subscriber::THREAD_LOCAL_KEY] = at_the_cap
+        expect(subscriber.should_continue_tracking?).to be false
+
+        Thread.current[described_class::REQUEST_KEY] = true
+        expect(subscriber.should_continue_tracking?).to be true
+
+        Thread.current[subscriber::THREAD_LOCAL_KEY] = Array.new(subscriber::MAX_TRACKED_EVENTS * described_class::LIMIT_FACTOR) { {} }
         expect(subscriber.should_continue_tracking?).to be false
 
         Thread.current[subscriber::THREAD_LOCAL_KEY] = []
         Thread.current[DeadBro::TRACKING_START_TIME_KEY] = Time.now - DeadBro::MAX_TRACKING_DURATION_SECONDS - 1
         expect(subscriber.should_continue_tracking?).to be false
-
-        Thread.current[subscriber::THREAD_LOCAL_KEY] = at_the_cap
-        Thread.current[described_class::REQUEST_KEY] = true
-        expect(subscriber.should_continue_tracking?).to be true
       end
     end
 
-    it "keeps every view past the cap" do
+    it "keeps a hundred times as many views" do
       views = DeadBro::ViewRenderingSubscriber::MAX_TRACKED_EVENTS + 5
       render_views = lambda do
         DeadBro::ViewRenderingSubscriber.start_request_tracking
@@ -376,7 +397,7 @@ RSpec.describe DeadBro::SuperSample do
       expect(render_views.call).to eq(views)
     end
 
-    it "keeps every DeadBro.watch block, however many and however deep" do
+    it "keeps a hundred times as many DeadBro.watch blocks, a hundred times as deep" do
       config.watch_enabled = true
       blocks = DeadBro::WatchTracker::MAX_SPANS_PER_REQUEST + 5
       levels = DeadBro::WatchTracker::MAX_DEPTH + 4
@@ -397,7 +418,7 @@ RSpec.describe DeadBro::SuperSample do
       expect(watch_blocks.call(&deep)).to eq(levels)
     end
 
-    it "keeps every transaction event past the cap" do
+    it "keeps a hundred times as many transaction events" do
       transactions = DeadBro::SqlSubscriber::MAX_TRACKED_TXN_EVENTS + 5
       now = Time.now
       run_transactions = lambda do
@@ -414,7 +435,8 @@ RSpec.describe DeadBro::SuperSample do
     end
   end
 
-  describe "what a super sample leaves whole" do
+  # Each of these is past its usual limit and within a hundred times it.
+  describe "what a super sample keeps more of" do
     before { config.super_samples_by_type = {"OrdersController#index" => 1, "ReportJob#perform" => 1} }
 
     it "the SQL text" do
@@ -424,6 +446,16 @@ RSpec.describe DeadBro::SuperSample do
 
       expect(ordinary[:sql_queries].first[:sql].length).to eq(DeadBro::SqlSubscriber::SANITIZE_MAX_LENGTH + 1 + "...".length)
       expect(whole[:sql_queries].first[:sql]).to eq(statement)
+    end
+
+    it "cuts the SQL text at a hundred times its usual length" do
+      draw(true)
+      max_length = DeadBro::SqlSubscriber::SANITIZE_MAX_LENGTH * described_class::LIMIT_FACTOR
+      statement = "SELECT #{(1..6_000).map { |i| "orders.column_#{i}" }.join(", ")} FROM orders"
+
+      payload = request { sql(statement) }
+
+      expect(payload[:sql_queries].first[:sql].length).to eq(max_length + 1 + "...".length)
     end
 
     it "the params, with their sensitive values still filtered" do
@@ -537,7 +569,7 @@ RSpec.describe DeadBro::SuperSample do
       expect(whole[:tags]).to eq(tags.transform_keys(&:to_s))
     end
 
-    it "its payload: max_sql_queries_to_send and max_logs_to_send cut nothing" do
+    it "its payload: a hundred times max_sql_queries_to_send and max_logs_to_send" do
       config.max_sql_queries_to_send = 3
       config.max_logs_to_send = 2
       payload = {
@@ -556,6 +588,53 @@ RSpec.describe DeadBro::SuperSample do
       expect(whole[:logs].size).to eq(5)
       expect(whole).not_to have_key(:sql_queries_total_count)
       expect(whole).not_to have_key(:logs_total_count)
+
+      config.max_sql_queries_to_send = 1 # a hundred times it keeps all 10
+      config.max_logs_to_send = 0
+      capped = http_client.send(:truncate_payload_for_request, payload.merge(super_sample: true))
+      expect(capped[:sql_queries].size).to eq(10)
+      expect(capped[:logs]).to eq([])
+      expect(capped[:logs_total_count]).to eq(5)
+    end
+  end
+
+  describe "a super sample over the byte ceiling" do
+    let(:http_client) { DeadBro::Client.new(config) }
+    let(:sent) { [] }
+    let(:payload) do
+      {
+        controller: "OrdersController",
+        super_sample: true,
+        sql_queries: (1..40).map { |i| {sql: "SELECT #{i} FROM orders WHERE note = '#{"x" * 100}'"} },
+        logs: (1..30).map { |i| {msg: "line #{i}"} }
+      }
+    end
+
+    before do
+      config.api_key = "key"
+      config.max_sql_queries_to_send = 5
+      config.max_logs_to_send = 3
+      allow(http_client).to receive(:dispatch_request) { |**kwargs| sent << kwargs }
+    end
+
+    it "is sent with the usual limits, still marked so the backend counts it" do
+      stub_const("DeadBro::SuperSample::MAX_PAYLOAD_BYTES", 2_000)
+
+      http_client.post_metric(event_name: "OrdersController#index", payload: payload, force: true)
+
+      body = sent.first[:body]
+      expect(sent.first[:json]).to be_nil
+      expect(body[:payload]).to include(super_sample: true, super_sample_capped: true, sql_queries_total_count: 40, logs_total_count: 30)
+      expect(body[:payload][:sql_queries].size).to eq(5)
+      expect(body[:payload][:logs].size).to eq(3)
+    end
+
+    it "is sent as recorded when it fits, serialized once" do
+      http_client.post_metric(event_name: "OrdersController#index", payload: payload, force: true)
+
+      expect(sent.first[:body][:payload]).not_to have_key(:super_sample_capped)
+      expect(sent.first[:body][:payload][:sql_queries].size).to eq(40)
+      expect(JSON.parse(sent.first[:json])["payload"]["sql_queries"].size).to eq(40)
     end
   end
 end

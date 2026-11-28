@@ -218,11 +218,9 @@ module DeadBro
           begin
             exception_class, exception_message = data[:exception] if data[:exception]
             exception_obj = data[:exception_object]
-            backtrace = Array(exception_obj&.backtrace)
-            backtrace = backtrace.first(50) unless super_sample
+            backtrace = Array(exception_obj&.backtrace).first(DeadBro::SuperSample.limit(50))
             backtrace = backtrace.map { |line| sanitize_string(line) }
-            message = (exception_message || exception_obj&.message).to_s
-            message = message[0, 1000] unless super_sample
+            message = DeadBro::SuperSample.cut((exception_message || exception_obj&.message).to_s, 1000)
 
             error_payload = detail_fields.merge(
               controller: data[:controller],
@@ -361,12 +359,13 @@ module DeadBro
 
       # Truncate deeply to keep payload small and safe. truncate_value also redacts
       # sensitive keys at every nesting level (e.g. user[password]). A super
-      # sample's params are redacted the same way and not cut.
-      if DeadBro::SuperSample.active?
-        truncate_value(filtered, max_str: nil, max_array: nil, max_hash_keys: nil)
-      else
-        truncate_value(filtered)
-      end
+      # sample's params are redacted the same way, with a hundred times the room.
+      truncate_value(
+        filtered,
+        max_str: DeadBro::SuperSample.limit(200),
+        max_array: DeadBro::SuperSample.limit(20),
+        max_hash_keys: DeadBro::SuperSample.limit(30)
+      )
     rescue
       {}
     end
@@ -436,15 +435,14 @@ module DeadBro
       # Only a numeric trailing port is removed, so IPv6 literals ([::1]) survive.
       host = host.split("@").last.to_s
       host = host.sub(/:\d+\z/, "").downcase
-      DeadBro::SuperSample.active? ? host : host[0, 255]
+      host[0, 255]
     rescue
       ""
     end
 
-    # Not cut in a super sample.
+    # A hundred times as long in a super sample.
     def self.cut_user_agent(user_agent)
-      user_agent = sanitize_string(user_agent)
-      DeadBro::SuperSample.active? ? user_agent : user_agent[0..200]
+      DeadBro::SuperSample.cut(sanitize_string(user_agent), 201)
     end
 
     def self.safe_user_agent(data)
@@ -594,16 +592,17 @@ module DeadBro
 
     def self.build_cause_chain(exception)
       return [] unless exception
-      # A super sample gets every cause, each with its whole message and backtrace.
-      whole = DeadBro::SuperSample.active?
+      # A super sample gets a hundred times as many causes, each with a hundred times as
+      # much of its message and backtrace.
+      max_depth = DeadBro::SuperSample.limit(5)
       chain = []
       cause = exception.cause
       depth = 0
-      while cause && (whole || depth < 5)
+      while cause && depth < max_depth
         chain << {
           exception_class: cause.class.name,
-          message: sanitize_string(whole ? cause.message.to_s : cause.message.to_s[0, 500]),
-          backtrace_top: (whole ? Array(cause.backtrace) : Array(cause.backtrace).first(3)).map { |line| sanitize_string(line) }
+          message: sanitize_string(DeadBro::SuperSample.cut(cause.message.to_s, 500)),
+          backtrace_top: Array(cause.backtrace).first(DeadBro::SuperSample.limit(3)).map { |line| sanitize_string(line) }
         }
         cause = cause.cause
         depth += 1

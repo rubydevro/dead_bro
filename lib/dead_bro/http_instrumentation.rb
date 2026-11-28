@@ -260,12 +260,12 @@ module DeadBro
       events = Thread.current[THREAD_LOCAL_KEY]
       return false unless events
 
-      return false if events.length >= MAX_TRACKED_EVENTS && !DeadBro::SuperSample.active?
+      return false if events.length >= DeadBro::SuperSample.limit(MAX_TRACKED_EVENTS)
 
       start_time = Thread.current[DeadBro::TRACKING_START_TIME_KEY]
       if start_time
         elapsed_seconds = Time.now - start_time
-        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS && !DeadBro::SuperSample.active?
+        return false if elapsed_seconds >= DeadBro::MAX_TRACKING_DURATION_SECONDS
       end
 
       true
